@@ -211,6 +211,7 @@ describe('topic message quote handling', () => {
       params: expect.objectContaining({
         container_id_type: 'thread',
         container_id: 'omt_topic',
+        page_size: 50,
       }),
     });
   });
@@ -294,6 +295,7 @@ describe('topic message quote handling', () => {
       params: expect.objectContaining({
         container_id_type: 'thread',
         container_id: 'om_quote_target',
+        page_size: 50,
       }),
     });
   });

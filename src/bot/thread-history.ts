@@ -5,7 +5,7 @@ import { log } from '../core/logger';
 import { expandInteractiveCard } from './interactive-card';
 import type { ChatMode } from './chat-mode-cache';
 
-const DEFAULT_PAGE_SIZE = 100;
+const DEFAULT_PAGE_SIZE = 50;
 const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_MAX_MESSAGES = 40;
 const DEFAULT_MAX_CHARS = 24_000;
