@@ -42,6 +42,20 @@ export const BRIDGE_SYSTEM_PROMPT = `# lark-channel-bridge 运行约定
 
 这是用户**指向的对象**——用户的实际问题在它之后。回答时围绕这段内容展开；它也是 bridge 注入的元数据，**不要照抄 XML 标签**到回复里。
 
+## thread_history
+
+当用户在飞书话题/回复串里 @ 你时，bridge 可能会在 \`<user_input>\` 前注入 \`<thread_history>\`：
+
+\`\`\`
+<thread_history>
+{"scope":"oc_xxx:thread_xxx","messages":[
+  {"messageId":"om_xxx","senderId":"ou_xxx","senderName":"...","createdAt":"...","content":"..."}
+]}
+</thread_history>
+\`\`\`
+
+这只包含当前话题/回复串内最多 40 条历史消息，不包含整个普通群的聊天历史。用它理解上下文、区分发言人；不要把 \`senderId\`、\`messageId\` 或 XML/JSON 结构原样泄露给用户，除非用户明确要求排查消息元数据。
+
 ## interactive_card
 
 用户发 / 引用交互卡片时,bridge 会把卡的真实 JSON 注入到 \`<interactive_card>\` 块:

@@ -36,6 +36,9 @@ interface FakeLarkChannel {
     request: ReturnType<typeof vi.fn>;
     im: {
       v1: {
+        message: {
+          list: ReturnType<typeof vi.fn>;
+        };
         messageReaction: {
           create: ReturnType<typeof vi.fn>;
           delete: ReturnType<typeof vi.fn>;
@@ -146,11 +149,110 @@ describe('topic message quote handling', () => {
       expect.objectContaining({ cardContentType: 'user_card_content' }),
     );
   });
+
+  it('injects current topic history without unrelated group messages', async () => {
+    const h = await createHarness({
+      historyMessages: [
+        historyMessage({
+          messageId: 'om_history_a',
+          threadId: 'omt_topic',
+          rootId: 'om_topic_root',
+          senderId: 'ou_alice',
+          senderName: 'Alice',
+          text: '前面讨论 A',
+          createTime: '1760000000000',
+        }),
+        historyMessage({
+          messageId: 'om_noise',
+          threadId: 'omt_other',
+          rootId: 'om_other_root',
+          senderId: 'ou_noise',
+          senderName: 'Noise',
+          text: '别的话题',
+          createTime: '1760000000500',
+        }),
+        historyMessage({
+          messageId: 'om_direct_at',
+          threadId: 'omt_topic',
+          rootId: 'om_topic_root',
+          senderId: 'ou_user',
+          senderName: 'User',
+          text: '@Bridge 总结一下',
+          createTime: '1760000001000',
+        }),
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_direct_at',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 总结一下',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const history = readSection(h.agent.runOptions[0]?.prompt ?? '', 'thread_history') as {
+      messages: Array<{ messageId: string; senderId: string; senderName?: string; content: string }>;
+    };
+    expect(history.messages).toHaveLength(1);
+    expect(history.messages[0]).toMatchObject({
+      messageId: 'om_history_a',
+      senderId: 'ou_alice',
+      senderName: 'Alice',
+      content: '前面讨论 A',
+    });
+    expect(JSON.stringify(history)).not.toContain('别的话题');
+  });
+
+  it('caps injected topic history to forty messages', async () => {
+    const h = await createHarness({
+      historyMessages: Array.from({ length: 42 }, (_, index) =>
+        historyMessage({
+          messageId: `om_history_${index + 1}`,
+          threadId: 'omt_topic',
+          rootId: 'om_topic_root',
+          senderId: `ou_user_${index + 1}`,
+          senderName: `User ${index + 1}`,
+          text: `历史 ${index + 1}`,
+          createTime: String(1760000000000 + index),
+        }),
+      ),
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_direct_at',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 总结一下',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const history = readSection(h.agent.runOptions[0]?.prompt ?? '', 'thread_history') as {
+      truncated?: boolean;
+      messages: Array<{ messageId: string; content: string }>;
+    };
+    expect(history.truncated).toBe(true);
+    expect(history.messages).toHaveLength(40);
+    expect(history.messages[0]?.messageId).toBe('om_history_1');
+    expect(history.messages[39]?.messageId).toBe('om_history_40');
+    expect(JSON.stringify(history)).not.toContain('历史 41');
+  });
 });
 
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  historyMessages?: unknown[];
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -226,6 +328,7 @@ async function startTestBridge(h: {
 function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
+  historyMessages?: unknown[];
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const chatMode = options.chatMode ?? 'topic';
@@ -239,6 +342,14 @@ function createFakeLarkChannel(options: {
       request: vi.fn(async () => ({ data: { items: [] } })),
       im: {
         v1: {
+          message: {
+            list: vi.fn(async () => ({
+              data: {
+                has_more: false,
+                items: options.historyMessages ?? [],
+              },
+            })),
+          },
           messageReaction: {
             create: vi.fn(async () => ({ data: { reaction_id: 'reaction_1' } })),
             delete: vi.fn(async () => ({})),
@@ -320,6 +431,40 @@ function message(input: {
     replyToMessageId: input.parentId,
     createTime: 1760000001000,
   } as unknown as NormalizedMessage;
+}
+
+function historyMessage(input: {
+  messageId: string;
+  rootId: string;
+  threadId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  createTime: string;
+}): unknown {
+  return {
+    message_id: input.messageId,
+    root_id: input.rootId,
+    thread_id: input.threadId,
+    msg_type: 'text',
+    create_time: input.createTime,
+    chat_id: 'oc_topic_chat',
+    sender: {
+      id: input.senderId,
+      id_type: 'open_id',
+      sender_type: 'user',
+      sender_name: input.senderName,
+    },
+    body: {
+      content: JSON.stringify({ text: input.text }),
+    },
+  };
+}
+
+function readSection(prompt: string, tag: string): unknown {
+  const match = prompt.match(new RegExp(`<${tag}>\\n([\\s\\S]*?)\\n</${tag}>`));
+  if (!match) throw new Error(`missing section ${tag}`);
+  return JSON.parse(match[1] ?? 'null') as unknown;
 }
 
 interface MarkdownStreamInput {

@@ -31,6 +31,24 @@ export interface BridgePromptQuotedMessage {
   content: string;
 }
 
+export interface BridgePromptThreadHistory {
+  scope: string;
+  chatId: string;
+  threadId: string;
+  truncated?: boolean;
+  messages: BridgePromptThreadMessage[];
+}
+
+export interface BridgePromptThreadMessage {
+  messageId: string;
+  senderId: string;
+  senderName?: string;
+  senderType?: 'user' | 'bot';
+  createdAt?: string;
+  rawContentType: string;
+  content: string;
+}
+
 export interface BridgePromptInteractiveCard {
   messageId?: string;
   content: unknown;
@@ -61,6 +79,7 @@ export interface BuildAgentPromptInput {
   instructions?: string[];
   userInput: string;
   quotedMessages?: BridgePromptQuotedMessage[];
+  threadHistory?: BridgePromptThreadHistory;
   interactiveCards?: BridgePromptInteractiveCard[];
   comment?: BridgePromptComment;
   attachments?: BridgePromptAttachment[];
@@ -74,6 +93,9 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
       : undefined,
     input.quotedMessages && input.quotedMessages.length > 0
       ? promptSection('quoted_messages', input.quotedMessages)
+      : undefined,
+    input.threadHistory && input.threadHistory.messages.length > 0
+      ? promptSection('thread_history', input.threadHistory)
       : undefined,
     input.interactiveCards && input.interactiveCards.length > 0
       ? promptSection('interactive_cards', input.interactiveCards)

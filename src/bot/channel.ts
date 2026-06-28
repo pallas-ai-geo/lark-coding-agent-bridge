@@ -11,6 +11,7 @@ import {
   type BridgePromptInteractiveCard,
   type BridgePromptMention,
   type BridgePromptQuotedMessage,
+  type BridgePromptThreadHistory,
 } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
@@ -63,6 +64,7 @@ import { fetchQuotedContext, type QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import { fetchThreadHistory } from './thread-history';
 
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
@@ -669,8 +671,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes, channel.botIdentity);
-  log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
+  const threadHistory = await fetchThreadHistory(channel, {
+    scope,
+    chatId,
+    threadId: scopeThreadId,
+    mode,
+    beforeCreateTime: lastMsg.createTime,
+    excludeMessageIds: batchIds,
+  });
+
+  const prompt = buildPrompt(batch, attachments, quotes, threadHistory, channel.botIdentity);
+  log.info('prompt', 'built', {
+    promptChars: prompt.length,
+    quotes: quotes.length,
+    threadHistoryMessages: threadHistory?.messages.length ?? 0,
+    threadHistoryTruncated: Boolean(threadHistory?.truncated),
+  });
 
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
@@ -1147,6 +1163,7 @@ function buildPrompt(
   batch: NormalizedMessage[],
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
+  threadHistory: BridgePromptThreadHistory | undefined,
   botIdentity?: { openId: string; name?: string },
 ): string {
   const first = batch[0];
@@ -1190,6 +1207,7 @@ function buildPrompt(
     instructions: BRIDGE_AGENT_INSTRUCTIONS,
     userInput: userPart,
     quotedMessages: quotes.map(toPromptQuote),
+    threadHistory,
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
   });
