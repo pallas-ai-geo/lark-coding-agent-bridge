@@ -21,12 +21,16 @@ export interface FakeChannel {
   readonly sent: FakeChannelMessage[];
   readonly streams: FakeChannelStream[];
   /**
-   * Maps a messageId to the `thread_id` that `fetchRawMessage` should report
-   * for it — mirrors the raw `im.v1.message.get` items[0].thread_id that the
-   * card dispatcher reads to scope topic-group clicks. Empty by default.
+   * Maps a messageId to raw thread/root fields that `fetchRawMessage` should
+   * report for it — mirrors the raw `im.v1.message.get` item fields that the
+   * card dispatcher reads to scope scoped clicks. Empty by default.
    */
   readonly rawThreadIds: Map<string, string>;
-  fetchRawMessage(messageId: string): Promise<Array<{ thread_id?: string }>>;
+  readonly rawRootIds: Map<string, string>;
+  readonly rawParentIds: Map<string, string>;
+  fetchRawMessage(
+    messageId: string,
+  ): Promise<Array<{ thread_id?: string; root_id?: string; parent_id?: string }>>;
   readonly rawClient: {
     readonly requests: FakeRawClientRequest[];
     request(method: string, params: unknown): Promise<unknown>;
@@ -59,6 +63,8 @@ export function createFakeChannel(): FakeChannel {
   const streams: FakeChannelStream[] = [];
   const requests: FakeRawClientRequest[] = [];
   const rawThreadIds = new Map<string, string>();
+  const rawRootIds = new Map<string, string>();
+  const rawParentIds = new Map<string, string>();
   const cardById = new Map<string, unknown>();
   let nextCard = 1;
   let nextMessage = 1;
@@ -78,9 +84,21 @@ export function createFakeChannel(): FakeChannel {
     sent,
     streams,
     rawThreadIds,
-    async fetchRawMessage(messageId: string): Promise<Array<{ thread_id?: string }>> {
+    rawRootIds,
+    rawParentIds,
+    async fetchRawMessage(
+      messageId: string,
+    ): Promise<Array<{ thread_id?: string; root_id?: string; parent_id?: string }>> {
       const threadId = rawThreadIds.get(messageId);
-      return [threadId ? { thread_id: threadId } : {}];
+      const rootId = rawRootIds.get(messageId);
+      const parentId = rawParentIds.get(messageId);
+      return [
+        {
+          ...(threadId ? { thread_id: threadId } : {}),
+          ...(rootId ? { root_id: rootId } : {}),
+          ...(parentId ? { parent_id: parentId } : {}),
+        },
+      ];
     },
     rawClient: {
       requests,

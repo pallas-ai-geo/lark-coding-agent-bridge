@@ -109,11 +109,11 @@ export interface CommandContext {
   channel: LarkChannel;
   msg: NormalizedMessage;
   /**
-   * Session scope string. For p2p / regular group it equals `msg.chatId`;
-   * for topic groups it's `${chatId}:${threadId}` (so each topic gets its
-   * own session / cwd / active-run). All handlers should read/write
-   * session / workspace / activeRuns through this — never through
-   * `msg.chatId` directly.
+   * Session scope string. For p2p / top-level regular group messages it
+   * equals `msg.chatId`; for regular group reply threads and topic groups it
+   * is `${chatId}:${threadKey}` (so each thread gets its own session / cwd /
+   * active-run). All handlers should read/write session / workspace /
+   * activeRuns through this — never through `msg.chatId` directly.
    */
   scope: string;
   /** Resolved chat mode for `msg.chatId`. Used by /status to surface the

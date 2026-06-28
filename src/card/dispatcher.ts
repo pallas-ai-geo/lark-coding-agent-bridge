@@ -13,6 +13,11 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import {
+  scopeForParts,
+  scopeThreadIdForIds,
+  type ScopeMessageIds,
+} from '../bot/scope';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -57,12 +62,13 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     | undefined;
   const formValue = raw?.action?.form_value;
 
-  // Resolve the click's session scope. For topic groups we need to know
-  // the message's thread_id so the action targets the right topic's
-  // session — look up the carrier message (the card lives on it) once.
+  // Resolve the click's session scope. Topic groups need `thread_id`; regular
+  // group reply threads may only carry `root_id` / `parent_id`. Look up the
+  // carrier message (the card lives on it) once so callbacks target the same
+  // scope that created the card.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
-  const { scope, threadId, mode } = await resolveScope(deps);
+  const { scope, threadId, mode, ids } = await resolveScope(deps);
 
   const accessDecision =
     mode === 'p2p'
@@ -87,7 +93,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       return;
     }
     log.info('cardAction', 'cmd', { cmd, scope });
-    const msg = makeFakeMsg(deps.evt, threadId);
+    const msg = makeFakeMsg(deps.evt, threadId, ids);
 
     const ctx: CommandContext = {
       channel: deps.channel,
@@ -133,7 +139,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // as a follow-up message, with full context of what it sent.
   if (BRIDGE_CALLBACK_MARKER in payload) {
     if (!verifyBridgeToken(deps, payload, scope, 'agent_callback')) return;
-    forwardToAgent(deps, payload, formValue, scope, threadId, mode);
+    forwardToAgent(deps, payload, formValue, scope, threadId, mode, ids);
     return;
   }
 
@@ -142,41 +148,53 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
 async function resolveScope(
   deps: CardDispatchDeps,
-): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
+): Promise<{
+  scope: string;
+  threadId: string | undefined;
+  mode: 'p2p' | 'group' | 'topic';
+  ids: ScopeMessageIds;
+}> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
-    return { scope: chatId, threadId: undefined, mode };
+  if (mode === 'p2p') {
+    return { scope: chatId, threadId: undefined, mode, ids: { messageId: deps.evt.messageId } };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
+
   // One API call per click; could cache by messageId if it ever becomes hot.
-  const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
-  if (!threadId) {
-    // Fall back to plain chatId. Better to land in the chat's "default"
-    // scope than fail the click silently.
-    return { scope: chatId, threadId: undefined, mode };
-  }
-  return { scope: `${chatId}:${threadId}`, threadId, mode };
+  const ids = await lookupMessageScopeIds(deps.channel, deps.evt.messageId);
+  const threadId = scopeThreadIdForIds(ids, mode);
+  return { scope: scopeForParts(chatId, threadId), threadId, mode, ids };
 }
 
-async function lookupMessageThreadId(
+async function lookupMessageScopeIds(
   channel: LarkChannel,
   messageId: string,
-): Promise<string | undefined> {
+): Promise<ScopeMessageIds> {
   try {
     // fetchRawMessage returns the raw `im.v1.message.get` items, which carry
-    // `thread_id`. We intentionally avoid channel.fetchMessage() here: its
-    // NormalizedMessage path rebuilds a synthetic raw event without
-    // `thread_id`, so threadId always comes back undefined and topic-group
-    // card clicks would fall back to the plain chatId scope (wrong session).
+    // thread/root metadata. We intentionally avoid channel.fetchMessage()
+    // here: its NormalizedMessage path rebuilds a synthetic raw event without
+    // `thread_id`, so scoped card clicks would fall back to the plain chatId.
     const [parent] = await channel.fetchRawMessage(messageId);
-    return (parent as { thread_id?: string } | undefined)?.thread_id;
+    const raw = parent as
+      | {
+          thread_id?: string;
+          root_id?: string;
+          parent_id?: string;
+        }
+      | undefined;
+    return {
+      messageId,
+      ...(raw?.thread_id ? { threadId: raw.thread_id } : {}),
+      ...(raw?.root_id ? { rootId: raw.root_id } : {}),
+      ...(raw?.parent_id ? { parentId: raw.parent_id } : {}),
+    };
   } catch (err) {
-    log.warn('cardAction', 'thread-id-lookup-failed', {
+    log.warn('cardAction', 'scope-ids-lookup-failed', {
       messageId,
       err: err instanceof Error ? err.message : String(err),
     });
-    return undefined;
+    return { messageId };
   }
 }
 
@@ -187,6 +205,7 @@ function forwardToAgent(
   scope: string,
   threadId: string | undefined,
   mode: 'p2p' | 'group' | 'topic',
+  ids: ScopeMessageIds = {},
 ): void {
   // Strip the marker so the agent only sees the meaningful fields it set.
   const {
@@ -204,6 +223,7 @@ function forwardToAgent(
     chatId: deps.evt.chatId,
     chatType: mode === 'p2p' ? 'p2p' : 'group',
     threadId,
+    rootId: ids.rootId,
     senderId: deps.evt.operator.openId,
     senderName: deps.evt.operator.name,
     content: `[card-click] ${JSON.stringify(merged)}`,
@@ -272,12 +292,14 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
 function makeFakeMsg(
   evt: CardActionEvent,
   threadId: string | undefined,
+  ids: ScopeMessageIds = {},
 ): NormalizedMessage {
   return {
     messageId: evt.messageId,
     chatId: evt.chatId,
     chatType: 'p2p',
     threadId,
+    rootId: ids.rootId,
     senderId: evt.operator.openId,
     senderName: evt.operator.name,
     content: '',

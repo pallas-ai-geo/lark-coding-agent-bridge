@@ -55,6 +55,7 @@ import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
+import { resolveMessageScope, scopeThreadIdForMessage } from './scope';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
@@ -512,10 +513,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
-  const chatMode = await chatModeCache.resolve(channel, msg.chatId);
-  const scope = chatMode === 'topic' && msg.threadId
-    ? `${msg.chatId}:${msg.threadId}`
-    : msg.chatId;
+  const { scope, mode: chatMode } = await resolveMessageScope(channel, msg, chatModeCache);
   log.info('intake', 'enter', {
     scope,
     chatType: msg.chatType,
@@ -627,6 +625,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
+  const scopeThreadId = scopeThreadIdForMessage(firstMsg, mode);
 
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
@@ -689,7 +688,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     source: 'im',
     chatId,
     actorId: firstMsg.senderId,
-    ...(threadId ? { threadId } : {}),
+    ...(scopeThreadId ? { threadId: scopeThreadId } : {}),
   };
   const capability =
     controls.profileConfig.agentKind === 'codex'

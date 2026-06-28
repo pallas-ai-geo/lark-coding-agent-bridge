@@ -77,7 +77,7 @@ export interface StatusInfo {
   activeCommentScopes?: string[];
   queue?: { active: number; waiting: number; cap: number };
   ownerState: string;
-  /** Session scope (= chatId or chatId:threadId in topic groups). */
+  /** Session scope (= chatId or chatId:threadKey in scoped group/topic threads). */
   scope: string;
   /** Chat mode — used to label scope. */
   chatMode: 'p2p' | 'group' | 'topic';
@@ -87,11 +87,13 @@ export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
     ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
     : (info.emptySessionText ?? '(无)');
-  // For topic groups, surface that the scope is per-topic so the user
-  // knows /cd / /new only affect this topic.
+  // Surface scoped thread sessions so the user knows /cd / /new only affect
+  // this topic/reply thread.
   const scopeLine =
     info.chatMode === 'topic'
       ? `\`${escapeCode(info.scope)}\` _（话题独立 session）_`
+      : info.chatMode === 'group' && info.scope.includes(':')
+        ? `\`${escapeCode(info.scope)}\` _（回复串独立 session）_`
       : `\`${escapeCode(info.scope)}\``;
   const cwdLine = info.cwd ? `\`${escapeCode(info.cwd)}\`` : '(未设置)';
   const queueLine = info.queue
