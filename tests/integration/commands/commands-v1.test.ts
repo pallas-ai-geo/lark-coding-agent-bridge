@@ -299,6 +299,44 @@ describe('Bridge command contracts', () => {
     expect(root?.profiles.claude?.access.allowedUsers).not.toContain('ou-alice');
   });
 
+  it('manages topic-root auto reply through /autotopic', async () => {
+    const h = await createHarness();
+
+    await expect(
+      h.run('/autotopic on', {
+        chatId: 'oc-topic-1',
+        scope: 'oc-topic-1:omt-topic',
+        chatMode: 'topic',
+      }),
+    ).resolves.toBe(true);
+
+    let root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-topic-1');
+    expect(root?.profiles.claude?.access.autoReplyTopicChats).toContain('oc-topic-1');
+    expect(lastMarkdown(h.channel)).toContain('首帖自动回复');
+
+    await expect(
+      h.run('/autotopic status', {
+        chatId: 'oc-topic-1',
+        scope: 'oc-topic-1:omt-topic',
+        chatMode: 'topic',
+      }),
+    ).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('已开启');
+
+    await expect(
+      h.run('/autotopic off', {
+        chatId: 'oc-topic-1',
+        scope: 'oc-topic-1:omt-topic',
+        chatMode: 'topic',
+      }),
+    ).resolves.toBe(true);
+
+    root = await loadRootConfig(h.controls.configPath);
+    expect(root?.profiles.claude?.access.allowedChats).toContain('oc-topic-1');
+    expect(root?.profiles.claude?.access.autoReplyTopicChats).not.toContain('oc-topic-1');
+  });
+
   it('adds every known bot group through /invite all group', async () => {
     const h = await createHarness();
     h.controls.knownChats = [

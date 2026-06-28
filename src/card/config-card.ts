@@ -12,6 +12,7 @@ export interface ConfigFormOpts {
   larkCliIdentity: LarkCliIdentityPreset;
   allowedUsers: string[];
   allowedChats: string[];
+  autoReplyTopicChats: string[];
   admins: string[];
   knownChats: KnownChat[];
 }
@@ -74,6 +75,15 @@ export function configFormCard(opts: ConfigFormOpts): object {
         `${chatList(opts.allowedChats, opts.knownChats)}\n\n` +
         '_一键加全部 bot 所在的群：_ `/invite all group`\n' +
         '_加 / 删（在目标群里发）：_ `/invite group`  `/remove group`',
+    },
+    { tag: 'hr' },
+    {
+      tag: 'markdown',
+      content:
+        `**话题群首帖自动回复**（共 ${opts.autoReplyTopicChats.length} 个）\n` +
+        `${chatList(opts.autoReplyTopicChats, opts.knownChats)}\n\n` +
+        '_只自动回复新话题首帖；话题内后续回复仍需 @ bot。_\n' +
+        '_开 / 关（在目标话题群里发）：_ `/autotopic on`  `/autotopic off`',
     },
     { tag: 'hr' },
     {
@@ -268,6 +278,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             '🔒 **访问控制**\n' +
             `**允许私聊的用户**:${summarize(opts.allowedUsers)}\n` +
             `**允许响应的群**:${summarize(opts.allowedChats)}\n` +
+            `**话题群首帖自动回复**:${summarize(opts.autoReplyTopicChats)}\n` +
             `**管理员**:${summarize(opts.admins)}\n\n` +
             '下条消息开始生效。',
         },

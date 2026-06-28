@@ -27,6 +27,7 @@ import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templa
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getAutoReplyTopicChats,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -176,6 +177,7 @@ const handlers: Record<string, Handler> = {
   '/doc': handleDoc,
   '/invite': handleInvite,
   '/remove': handleRemove,
+  '/autotopic': handleAutoTopic,
 };
 
 /**
@@ -194,6 +196,7 @@ const ADMIN_COMMANDS = new Set([
   '/ws',
   '/invite',
   '/remove',
+  '/autotopic',
 ]);
 
 function isAdminCommand(cmd: string): boolean {
@@ -1664,6 +1667,70 @@ async function handleRemove(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, parts.join('\n'));
 }
 
+async function handleAutoTopic(args: string, ctx: CommandContext): Promise<void> {
+  const sub = args.trim().split(/\s+/)[0]?.toLowerCase() ?? 'status';
+  if (!['on', 'off', 'status'].includes(sub)) {
+    await reply(ctx, '用法：`/autotopic on` / `/autotopic off` / `/autotopic status`');
+    return;
+  }
+  if (ctx.chatMode === 'p2p') {
+    await reply(ctx, '❌ `/autotopic` 只能在目标话题群里使用。');
+    return;
+  }
+  if (ctx.chatMode !== 'topic') {
+    await reply(ctx, '❌ 当前会话不是话题群；`/autotopic` 只对话题群生效。');
+    return;
+  }
+
+  const chatId = ctx.msg.chatId;
+  if (sub === 'status') {
+    const enabled = ctx.controls.profileConfig.access.autoReplyTopicChats.includes(chatId);
+    const allowed = ctx.controls.profileConfig.access.allowedChats.includes(chatId);
+    await reply(
+      ctx,
+      `当前话题群首帖自动回复：${enabled ? '已开启' : '未开启'}\n` +
+        `当前群响应白名单：${allowed ? '已加入' : '未加入'}`,
+    );
+    return;
+  }
+
+  let changed = false;
+  await saveAccessConfig(ctx, (current) => {
+    const allowedChats = new Set(current.allowedChats);
+    const autoReplyTopicChats = new Set(current.autoReplyTopicChats);
+    if (sub === 'on') {
+      changed = !autoReplyTopicChats.has(chatId);
+      allowedChats.add(chatId);
+      autoReplyTopicChats.add(chatId);
+    } else {
+      changed = autoReplyTopicChats.delete(chatId);
+    }
+    return {
+      ...current,
+      allowedChats: [...allowedChats],
+      autoReplyTopicChats: [...autoReplyTopicChats],
+    };
+  });
+
+  if (sub === 'on') {
+    await reply(
+      ctx,
+      changed
+        ? '✅ 已开启当前话题群的新话题首帖自动回复；话题里的后续回复仍需 @ bot。'
+        : '✅ 当前话题群已开启首帖自动回复，无需重复开启。',
+    );
+    await promptGroupMsgScopeIfMissing(ctx);
+    return;
+  }
+
+  await reply(
+    ctx,
+    changed
+      ? '✅ 已关闭当前话题群的新话题首帖自动回复。'
+      : '✅ 当前话题群本来就没有开启首帖自动回复。',
+  );
+}
+
 function mentionTargets(ctx: CommandContext): Array<{ openId: string; name?: string }> {
   return (ctx.msg.mentions ?? [])
     .filter((mention) => !mention.isBot && typeof mention.openId === 'string' && mention.openId)
@@ -1691,6 +1758,7 @@ async function saveAccessConfig(
           access: {
             allowedUsers: access.allowedUsers,
             allowedChats: access.allowedChats,
+            autoReplyTopicChats: access.autoReplyTopicChats,
             admins: access.admins,
           },
           requireMentionInGroup: access.requireMentionInGroup,
@@ -1712,6 +1780,7 @@ async function saveAccessConfig(
       log.info('command', 'access-mutated', {
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
+        autoReplyTopicChats: access.autoReplyTopicChats.length,
         admins: access.admins.length,
       });
       return access;
@@ -1759,6 +1828,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
+    autoReplyTopicChats: getAutoReplyTopicChats(ctx.controls.cfg),
     admins: access.admins,
     knownChats: ctx.controls.knownChats ?? [],
   });
@@ -1916,6 +1986,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       larkCliIdentity,
       allowedUsersCount: access.allowedUsers.length,
       allowedChatsCount: access.allowedChats.length,
+      autoReplyTopicChatsCount: access.autoReplyTopicChats.length,
       adminsCount: access.admins.length,
     });
     await waitForSettle();
@@ -1931,6 +2002,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliIdentity,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
+        autoReplyTopicChats: access.autoReplyTopicChats,
         admins: access.admins,
         knownChats: ctx.controls.knownChats ?? [],
       }),

@@ -412,6 +412,7 @@ describe('profile runtime resolver', () => {
     expect(runtime.profileConfig.access).toEqual({
       allowedUsers: ['ou_allowed'],
       allowedChats: ['oc_allowed'],
+      autoReplyTopicChats: [],
       admins: ['ou_admin'],
       requireMentionInGroup: false,
     });
@@ -428,6 +429,7 @@ describe('profile runtime resolver', () => {
     expect(saved.profiles.claude?.access).toEqual({
       allowedUsers: ['ou_allowed'],
       allowedChats: ['oc_allowed'],
+      autoReplyTopicChats: [],
       admins: ['ou_admin'],
       requireMentionInGroup: false,
     });

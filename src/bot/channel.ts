@@ -31,6 +31,7 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  isAutoReplyTopicChat,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -543,6 +544,12 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  const autoReplyTopicRoot =
+    msg.chatType !== 'p2p' &&
+    chatMode === 'topic' &&
+    isAutoReplyTopicChat(controls.cfg, msg.chatId) &&
+    isTopicRootMessage(msg);
+
   // Group-mention policy. p2p is always unrestricted; in groups (regular and
   // topic) we drop messages that don't @bot when the user has opted into the
   // quiet-by-default behavior. Slash commands are NOT exempt — the user
@@ -552,7 +559,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (
     msg.chatType !== 'p2p' &&
     getRequireMentionInGroup(controls.cfg) &&
-    !msg.mentionedBot
+    !msg.mentionedBot &&
+    !autoReplyTopicRoot
   ) {
     log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
     return;
@@ -587,7 +595,29 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   const size = pending.push(scope, msg);
-  log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+  log.info('intake', 'queued', {
+    scope,
+    queueSize: size,
+    debounceMs: DEBOUNCE_MS,
+    autoReplyTopicRoot,
+  });
+}
+
+export function isTopicRootMessage(msg: NormalizedMessage): boolean {
+  const ids = msg as NormalizedMessage & {
+    rootId?: string;
+    parentId?: string;
+    replyToMessageId?: string;
+  };
+  const messageId = ids.messageId?.trim();
+  if (!messageId) return false;
+  const rootId = ids.rootId?.trim();
+  const parentId = ids.parentId?.trim();
+  const replyToMessageId = ids.replyToMessageId?.trim();
+  if (rootId && rootId !== messageId) return false;
+  if (parentId && parentId !== messageId) return false;
+  if (replyToMessageId && replyToMessageId !== messageId) return false;
+  return true;
 }
 
 interface RunBatchDeps {

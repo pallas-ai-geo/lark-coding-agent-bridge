@@ -329,12 +329,49 @@ describe('topic message quote handling', () => {
       content.includes('正在') && content.includes('<at id="ou_user"></at>'),
     )).toBe(false);
   });
+
+  it('auto-runs only for configured topic root messages without requiring later replies to mention the bot', async () => {
+    const h = await createHarness({
+      autoReplyTopicChats: ['oc_topic_chat'],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_topic_root',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '新话题：帮我看一下这个部署',
+        mentionedBot: false,
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    expect(h.agent.runOptions[0]?.prompt).toContain('新话题：帮我看一下这个部署');
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_topic_reply',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '补充一句，但没有 @',
+        mentionedBot: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 750));
+
+    expect(h.agent.runOptions).toHaveLength(1);
+  });
 });
 
 async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   historyMessages?: unknown[];
+  autoReplyTopicChats?: string[];
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -357,6 +394,7 @@ async function createHarness(options: {
     },
     access: {
       allowedChats: ['oc_topic_chat'],
+      autoReplyTopicChats: options.autoReplyTopicChats ?? [],
       allowedUsers: ['ou_user'],
     },
   });
@@ -411,6 +449,7 @@ function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   historyMessages?: unknown[];
+  autoReplyTopicChats?: string[];
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const markdownContents: string[] = [];
@@ -506,7 +545,9 @@ function message(input: {
   parentId: string;
   threadId?: string;
   content: string;
+  mentionedBot?: boolean;
 }): NormalizedMessage {
+  const mentionedBot = input.mentionedBot ?? true;
   return {
     messageId: input.messageId,
     chatId: 'oc_topic_chat',
@@ -516,9 +557,9 @@ function message(input: {
     content: input.content,
     rawContentType: 'text',
     resources: [],
-    mentions: [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }],
+    mentions: mentionedBot ? [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }] : [],
     mentionAll: false,
-    mentionedBot: true,
+    mentionedBot,
     rootId: input.rootId,
     parentId: input.parentId,
     ...(input.threadId ? { threadId: input.threadId } : {}),

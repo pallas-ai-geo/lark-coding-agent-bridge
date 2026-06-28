@@ -80,7 +80,7 @@ export function scopeThreadIdForIds(
   mode: ChatMode,
 ): string | undefined {
   if (mode === 'p2p') return undefined;
-  if (mode === 'topic') return cleanScopePart(ids.threadId);
+  if (mode === 'topic') return firstScopePart(ids.threadId, ids.rootId, ids.messageId);
 
   return firstScopePart(
     ids.threadId,
