@@ -207,6 +207,12 @@ describe('topic message quote handling', () => {
       content: '前面讨论 A',
     });
     expect(JSON.stringify(history)).not.toContain('别的话题');
+    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledWith({
+      params: expect.objectContaining({
+        container_id_type: 'thread',
+        container_id: 'omt_topic',
+      }),
+    });
   });
 
   it('caps injected topic history to forty messages', async () => {
@@ -246,6 +252,50 @@ describe('topic message quote handling', () => {
     expect(history.messages[0]?.messageId).toBe('om_history_1');
     expect(history.messages[39]?.messageId).toBe('om_history_40');
     expect(JSON.stringify(history)).not.toContain('历史 41');
+  });
+
+  it('fetches regular group reply history from the thread container', async () => {
+    const h = await createHarness({
+      chatMode: 'group',
+      historyMessages: [
+        historyMessage({
+          messageId: 'om_group_history',
+          threadId: 'om_quote_target',
+          rootId: 'om_quote_target',
+          senderId: 'ou_alice',
+          senderName: 'Alice',
+          text: '普通群回复串里的历史',
+          createTime: '1760000000000',
+        }),
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_group_reply',
+        rootId: 'om_quote_target',
+        parentId: 'om_quote_target',
+        content: '@Bridge 看这条',
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const history = readSection(h.agent.runOptions[0]?.prompt ?? '', 'thread_history') as {
+      messages: Array<{ messageId: string; content: string }>;
+    };
+    expect(history.messages).toHaveLength(1);
+    expect(history.messages[0]).toMatchObject({
+      messageId: 'om_group_history',
+      content: '普通群回复串里的历史',
+    });
+    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledWith({
+      params: expect.objectContaining({
+        container_id_type: 'thread',
+        container_id: 'om_quote_target',
+      }),
+    });
   });
 });
 
@@ -343,12 +393,18 @@ function createFakeLarkChannel(options: {
       im: {
         v1: {
           message: {
-            list: vi.fn(async () => ({
-              data: {
-                has_more: false,
-                items: options.historyMessages ?? [],
-              },
-            })),
+            list: vi.fn(async (request: { params?: { container_id_type?: string; container_id?: string } }) => {
+              const params = request.params ?? {};
+              const items = (options.historyMessages ?? []).filter((item) =>
+                historyBelongsToContainer(item, params.container_id_type, params.container_id),
+              );
+              return {
+                data: {
+                  has_more: false,
+                  items,
+                },
+              };
+            }),
           },
           messageReaction: {
             create: vi.fn(async () => ({ data: { reaction_id: 'reaction_1' } })),
@@ -459,6 +515,21 @@ function historyMessage(input: {
       content: JSON.stringify({ text: input.text }),
     },
   };
+}
+
+function historyBelongsToContainer(
+  item: unknown,
+  containerIdType: string | undefined,
+  containerId: string | undefined,
+): boolean {
+  if (containerIdType !== 'thread' || !containerId) return true;
+  const raw = item as {
+    message_id?: string;
+    thread_id?: string;
+    root_id?: string;
+    parent_id?: string;
+  };
+  return [raw.message_id, raw.thread_id, raw.root_id, raw.parent_id].includes(containerId);
 }
 
 function readSection(prompt: string, tag: string): unknown {

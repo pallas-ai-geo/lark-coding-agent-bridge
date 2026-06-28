@@ -76,18 +76,18 @@ export async function fetchThreadHistory(
     for (let page = 0; page < maxPages; page++) {
       const response = await channel.rawClient.im.v1.message.list({
         params: {
-          container_id_type: 'chat',
-          container_id: opts.chatId,
+          container_id_type: 'thread',
+          container_id: opts.threadId,
           sort_type: 'ByCreateTimeAsc',
           page_size: DEFAULT_PAGE_SIZE,
           card_msg_content_type: 'user_card_content',
-          ...(opts.beforeCreateTime ? { end_time: toFeishuSeconds(opts.beforeCreateTime) } : {}),
           ...(pageToken ? { page_token: pageToken } : {}),
         },
       }) as MessageListResponse;
       const items = response.data?.items ?? [];
       for (const item of items) {
         if (!item.message_id || exclude.has(item.message_id) || item.deleted) continue;
+        if (!isBefore(item, opts.beforeCreateTime)) continue;
         if (!belongsToThread(item, opts)) continue;
         matched.push(item);
         if (matched.length >= maxMessages) {
@@ -136,13 +136,15 @@ export async function fetchThreadHistory(
 }
 
 function belongsToThread(item: RawHistoryMessageItem, opts: ThreadHistoryOptions): boolean {
-  if (opts.mode === 'topic') return item.thread_id === opts.threadId;
-  return (
-    item.thread_id === opts.threadId ||
-    item.root_id === opts.threadId ||
-    item.parent_id === opts.threadId ||
-    item.message_id === opts.threadId
-  );
+  const ids = [item.thread_id, item.root_id, item.parent_id, item.message_id].filter(Boolean);
+  if (ids.length === 0) return true;
+  return ids.includes(opts.threadId);
+}
+
+function isBefore(item: RawHistoryMessageItem, beforeCreateTime: number | undefined): boolean {
+  if (!beforeCreateTime || !item.create_time) return true;
+  const createMs = parseCreateMs(item.create_time);
+  return createMs === 0 || createMs < beforeCreateTime;
 }
 
 async function normalizeHistoryMessage(
@@ -243,11 +245,6 @@ function parseCreateMs(value: string | number): number {
   const n = Number.parseInt(String(value), 10);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return n < 10_000_000_000 ? n * 1000 : n;
-}
-
-function toFeishuSeconds(ms: number): string {
-  const n = ms < 10_000_000_000 ? ms : Math.floor(ms / 1000);
-  return String(n);
 }
 
 function fallbackContent(item: RawHistoryMessageItem): string {
