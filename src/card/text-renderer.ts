@@ -11,7 +11,11 @@ import { toolHeaderText } from './tool-render';
  *   - No reasoning / thinking output (no place to fold it; would be noise)
  *   - Footer is appended inline at the bottom while running
  */
-export function renderText(state: RunState): string {
+export interface RunTextRenderOptions {
+  finalMentionMarkdown?: string;
+}
+
+export function renderText(state: RunState, options: RunTextRenderOptions = {}): string {
   const parts: string[] = [];
 
   for (const block of state.blocks) {
@@ -28,6 +32,10 @@ export function renderText(state: RunState): string {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
+  }
+
+  if (state.terminal !== 'running' && options.finalMentionMarkdown) {
+    parts.push(options.finalMentionMarkdown);
   }
 
   return parts.join('\n\n');

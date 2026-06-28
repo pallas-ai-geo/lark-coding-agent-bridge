@@ -31,6 +31,7 @@ interface MessageHandlerMap {
 }
 
 interface FakeLarkChannel {
+  markdownContents: string[];
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -299,6 +300,35 @@ describe('topic message quote handling', () => {
       }),
     });
   });
+
+  it('mentions the triggering user only after the final markdown reply completes', async () => {
+    const h = await createHarness();
+    h.agent.setEvents([
+      { type: 'text', delta: '处理好了' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_direct_at',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 处理一下',
+      }),
+    );
+    await waitFor(() => h.channel.markdownContents.some((content) => content.includes('<at id="ou_user"></at>')));
+
+    const finalContent = h.channel.markdownContents.at(-1) ?? '';
+    expect(finalContent).toContain('处理好了');
+    expect(finalContent.trim()).toMatch(/<at id="ou_user"><\/at>$/);
+    expect(count(finalContent, '<at id="ou_user"></at>')).toBe(1);
+    expect(h.channel.markdownContents.some((content) =>
+      content.includes('正在') && content.includes('<at id="ou_user"></at>'),
+    )).toBe(false);
+  });
 });
 
 async function createHarness(options: {
@@ -383,12 +413,14 @@ function createFakeLarkChannel(options: {
   historyMessages?: unknown[];
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
+  const markdownContents: string[] = [];
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
   };
   return {
     handlers,
+    markdownContents,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -444,7 +476,11 @@ function createFakeLarkChannel(options: {
     async send() {},
     async stream(_chatId, input) {
       if (isMarkdownStreamInput(input)) {
-        await input.markdown({ setContent: async () => {} });
+        await input.markdown({
+          setContent: async (content: string) => {
+            markdownContents.push(content);
+          },
+        });
       }
     },
   };
@@ -546,6 +582,10 @@ interface MarkdownStreamInput {
 
 function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {
   return Boolean(input && typeof input === 'object' && 'markdown' in input);
+}
+
+function count(input: string, pattern: string): number {
+  return input.split(pattern).length - 1;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {

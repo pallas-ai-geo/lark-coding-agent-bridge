@@ -17,7 +17,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -26,7 +26,7 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderText, type RunTextRenderOptions } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
@@ -790,19 +790,29 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions = callbackAuth
-    ? {
-        signCallback: (action: string) =>
-          callbackAuth.sign({
-            runId: execution.runId,
-            scope,
-            chatId,
-            operatorOpenId: firstMsg.senderId,
-            action,
-            policyFingerprint: flow.policy.policyFingerprint,
-            ttlMs: 24 * 60 * 60 * 1000,
-          }),
-      }
+  const finalMention = finalSenderMention(lastMsg);
+  const cardRenderOptions: RunCardRenderOptions = {
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: flow.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+    ...(finalMention ? { finalMentionMarkdown: finalMention.cardMarkdown } : {}),
+  };
+  const streamTextRenderOptions: RunTextRenderOptions = finalMention
+    ? { finalMentionMarkdown: finalMention.cardMarkdown }
+    : {};
+  const postTextRenderOptions: RunTextRenderOptions = finalMention
+    ? { finalMentionMarkdown: finalMention.postMarkdown }
     : {};
 
   // For non-card modes Claude's output doesn't surface visually until either
@@ -873,7 +883,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderText(filterForPrefs(state), streamTextRenderOptions));
           }
         },
       );
@@ -883,7 +893,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState)));
+            await ctrl.setContent(renderText(filterForPrefs(latestState), streamTextRenderOptions));
             await renderDone;
           },
         },
@@ -895,7 +905,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         renderDone,
         producerStarted: () => producerStarted,
         fallback: async (state) => {
-          const body = renderText(filterForPrefs(state));
+          const body = renderText(filterForPrefs(state), postTextRenderOptions);
           if (body.trim()) {
             await channel.send(chatId, { markdown: body }, sendOpts);
           }
@@ -913,7 +923,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         recordSession,
         async () => {},
       );
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderText(filterForPrefs(finalState), postTextRenderOptions);
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
@@ -1157,6 +1167,32 @@ function scheduleWorkingReactionCleanup(
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function finalSenderMention(
+  msg: NormalizedMessage,
+): { cardMarkdown: string; postMarkdown: string } | undefined {
+  if (msg.chatType === 'p2p') return undefined;
+  if (!msg.senderId) return undefined;
+  if (senderTypeOf(msg) === 'bot') return undefined;
+
+  const id = escapeXmlAttribute(msg.senderId);
+  const name = escapeXmlText(msg.senderName ?? '');
+  return {
+    cardMarkdown: `<at id="${id}"></at>`,
+    postMarkdown: `<at user_id="${id}">${name}</at>`,
+  };
+}
+
+function escapeXmlAttribute(value: string): string {
+  return escapeXmlText(value).replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function buildPrompt(

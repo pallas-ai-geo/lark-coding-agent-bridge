@@ -16,6 +16,7 @@ type Group = ToolGroup | TextGroup;
 
 export interface RunCardRenderOptions {
   signCallback?: (action: string) => string;
+  finalMentionMarkdown?: string;
 }
 
 export function renderCard(state: RunState, options: RunCardRenderOptions = {}): object {
@@ -49,6 +50,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   if (state.terminal === 'running') {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
+  } else if (options.finalMentionMarkdown) {
+    elements.push(noteMd(options.finalMentionMarkdown));
   }
 
   return {
