@@ -330,10 +330,8 @@ describe('topic message quote handling', () => {
     )).toBe(false);
   });
 
-  it('auto-runs only for configured topic root messages without requiring later replies to mention the bot', async () => {
-    const h = await createHarness({
-      autoReplyTopicChats: ['oc_topic_chat'],
-    });
+  it('auto-runs topic root messages by default without requiring later replies to mention the bot', async () => {
+    const h = await createHarness();
 
     await startTestBridge(h);
 
@@ -371,7 +369,6 @@ async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   historyMessages?: unknown[];
-  autoReplyTopicChats?: string[];
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
@@ -394,7 +391,6 @@ async function createHarness(options: {
     },
     access: {
       allowedChats: ['oc_topic_chat'],
-      autoReplyTopicChats: options.autoReplyTopicChats ?? [],
       allowedUsers: ['ou_user'],
     },
   });
@@ -449,7 +445,6 @@ function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   historyMessages?: unknown[];
-  autoReplyTopicChats?: string[];
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const markdownContents: string[] = [];

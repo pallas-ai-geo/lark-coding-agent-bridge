@@ -79,8 +79,6 @@ export interface AppAccess {
   allowedUsers?: string[];
   /** chat_id allowlist for groups the bot responds in. Does not apply to p2p. */
   allowedChats?: string[];
-  /** topic-group chat_ids where new topic root messages may trigger without @bot. */
-  autoReplyTopicChats?: string[];
   /** open_id list with admin privileges. Gates sensitive commands
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws, /doc,
    * /invite, /remove). */
@@ -228,28 +226,6 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
     return profileAccess.requireMentionInGroup;
   }
   return true;
-}
-
-export function getAutoReplyTopicChats(cfg: AppConfig): string[] {
-  const profileAccess = (cfg as AppConfig & {
-    access?: { autoReplyTopicChats?: unknown };
-  }).access;
-  const legacyAccess = cfg.preferences?.access as
-    | (AppAccess & { autoReplyTopicChats?: unknown })
-    | undefined;
-  return stringList(profileAccess?.autoReplyTopicChats ?? legacyAccess?.autoReplyTopicChats);
-}
-
-export function isAutoReplyTopicChat(cfg: AppConfig, chatId: string): boolean {
-  return getAutoReplyTopicChats(cfg).includes(chatId);
-}
-
-function stringList(input: unknown): string[] {
-  if (!Array.isArray(input)) return [];
-  return input
-    .filter((value): value is string => typeof value === 'string')
-    .map((value) => value.trim())
-    .filter((value) => value.length > 0);
 }
 
 /**

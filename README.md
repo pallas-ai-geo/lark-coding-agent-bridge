@@ -150,7 +150,6 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/invite group` | Allow the current group to use the bot |
 | `/invite all group` | Allow all groups the bot has joined |
 | `/remove user @name`, `/remove admin @name`, `/remove group` | Remove access entries |
-| `/autotopic on\|off\|status` | In a topic group, auto-run only for new topic root messages |
 | `/stop` | Stop the current run, including the card stop button |
 | `/timeout [N\|off\|default]` | Set or clear the current session idle watchdog |
 | `/ps` | List local bridge processes |
@@ -159,7 +158,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/doctor [description]` | Run low-sensitive diagnostics |
 | `/help` | Help card |
 
-DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. In topic groups, admins can run `/autotopic on` to let new topic root messages trigger automatically while replies inside the topic still require `@bot`. Cloud-doc comments in supported document types run when the bot is mentioned.
+DMs do not require an @ mention. Groups require `@bot` by default; `@all` is ignored. In allowed topic groups, new topic root messages trigger automatically while replies inside the topic still require `@bot`. Cloud-doc comments in supported document types run when the bot is mentioned.
 
 ## lark-cli identity policy
 
@@ -236,7 +235,6 @@ To let other people or groups in, add them to one of three lists:
 |------|----------|-----|--------|
 | **Allowed users** | who can DM the bot | `/invite user @them` | `/remove user @them` |
 | **Allowed chats** | which groups the bot answers in (for **everyone** in them) | `/invite group` (current group) / `/invite all group` (every group the bot is in) | `/remove group` (current group) |
-| **Auto topic roots** | topic groups where only new topic root messages can trigger without `@bot` | `/autotopic on` (current topic group) | `/autotopic off` (current topic group) |
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
@@ -251,7 +249,6 @@ To let other people or groups in, add them to one of three lists:
 - **Just me** → nothing to do; this is the default.
 - **Let a teammate DM the bot** → `/invite user @them`
 - **Open a work group to everyone in it** → send `/invite group` inside that group
-- **Auto-answer new topics only** → in a topic group, send `/autotopic on`; topic replies still need `@bot`
 - **First-time setup, onboard every group the bot is already in** → `/invite all group` pulls them all into the list at once; trim with `/remove group` afterwards
 - **Add a co-admin** → `/invite admin @them`
 
@@ -259,7 +256,7 @@ To let other people or groups in, add them to one of three lists:
 
 - Changes take effect on the **next message** — no restart needed.
 - **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
-- `/autotopic on` is narrower than disabling the group mention requirement globally: it only bypasses `@bot` for new topic root messages in that topic group.
+- **Topic groups are narrower by default**: new topic root messages trigger automatically in allowed topic groups, but replies inside that topic still need `@bot`.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
@@ -276,7 +273,6 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
       "access": {
         "allowedUsers": ["ou_xxxxxxxxxxxxx"],
         "allowedChats": ["oc_xxxxxxxxxxxxx"],
-        "autoReplyTopicChats": ["oc_xxxxxxxxxxxxx"],
         "admins": ["ou_xxxxxxxxxxxxx"],
         "requireMentionInGroup": true
       }
@@ -285,7 +281,7 @@ If you'd rather not do it inside Feishu, `/invite` and `/config` write the match
 }
 ```
 
-`allowedUsers` / `admins` take user `open_id`s; `allowedChats` and `autoReplyTopicChats` take group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
+`allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
 
 ```bash
 grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5

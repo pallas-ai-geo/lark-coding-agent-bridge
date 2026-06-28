@@ -20,7 +20,6 @@ export type { AccessMode, PermissionConfig, PermissionSource };
 export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
-  autoReplyTopicChats: string[];
   admins: string[];
   requireMentionInGroup: boolean;
 }
@@ -253,7 +252,6 @@ function normalizeAccess(
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
-    autoReplyTopicChats: stringArray(access?.autoReplyTopicChats),
     admins: stringArray(access?.admins),
     requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
   };

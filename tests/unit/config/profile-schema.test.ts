@@ -94,7 +94,6 @@ describe('profile schema', () => {
     expect(cfg.access).toEqual({
       allowedUsers: [],
       allowedChats: [],
-      autoReplyTopicChats: [],
       admins: [],
       requireMentionInGroup: true,
     });

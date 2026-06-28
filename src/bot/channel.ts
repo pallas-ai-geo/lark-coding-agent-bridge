@@ -31,7 +31,6 @@ import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
   getAgentStopGraceMs,
-  isAutoReplyTopicChat,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -547,7 +546,6 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const autoReplyTopicRoot =
     msg.chatType !== 'p2p' &&
     chatMode === 'topic' &&
-    isAutoReplyTopicChat(controls.cfg, msg.chatId) &&
     isTopicRootMessage(msg);
 
   // Group-mention policy. p2p is always unrestricted; in groups (regular and
