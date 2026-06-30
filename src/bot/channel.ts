@@ -69,6 +69,9 @@ import { fetchThreadHistory } from './thread-history';
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
+const STREAM_THROTTLE_MS = 1200;
+const STREAM_THROTTLE_CHARS = 1500;
+const STREAM_MAX_ELEMENT_CHARS = 12_000;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -125,23 +128,133 @@ export function shouldSuppressSdkErrorLog(args: unknown[]): boolean {
   return args.some(isSuppressedSdkMessage);
 }
 
-function buildQuietLogger(): {
+interface SdkLogger {
   error: (...m: unknown[]) => void;
   warn: (...m: unknown[]) => void;
   info: (...m: unknown[]) => void;
   debug: (...m: unknown[]) => void;
   trace: (...m: unknown[]) => void;
-} {
+}
+
+export function buildQuietLogger(): SdkLogger {
   return {
     error: (...args: unknown[]) => {
       if (shouldSuppressSdkErrorLog(args)) return;
       log.warn('sdk', 'error', { args: stringifyArgs(args) });
     },
-    warn: (...args: unknown[]) => log.warn('sdk', 'warn', { args: stringifyArgs(args) }),
+    warn: (...args: unknown[]) => {
+      if (logStructuredSdkStreamWarning(args)) return;
+      log.warn('sdk', 'warn', { args: stringifyArgs(args) });
+    },
     info: (...args: unknown[]) => log.info('sdk', 'info', { args: stringifyArgs(args) }),
     debug: () => {},
     trace: () => {},
   };
+}
+
+function logStructuredSdkStreamWarning(args: unknown[]): boolean {
+  const marker = args[0];
+  const retryMeta = sdkRetryMetaFields(args[2]);
+  if (marker === '[stream] update retry') {
+    log.warn('sdk', 'stream_update_retry', { ...sdkErrorFields(args[1]), ...retryMeta });
+    return true;
+  }
+  if (marker === '[stream] update failed') {
+    log.warn('sdk', 'stream_update_failed', sdkErrorFields(args[1]));
+    return true;
+  }
+  if (marker === '[stream] finish retry') {
+    log.warn('sdk', 'stream_finish_retry', { ...sdkErrorFields(args[1]), ...retryMeta });
+    return true;
+  }
+  if (marker === '[stream] finishStreamingCard failed') {
+    log.warn('sdk', 'stream_finish_failed', sdkErrorFields(args[1]));
+    return true;
+  }
+  return false;
+}
+
+function sdkRetryMetaFields(value: unknown): Record<string, unknown> {
+  const obj = recordFromUnknown(value);
+  if (!obj) return {};
+  const fields: Record<string, unknown> = {};
+  const attempt = valueAt(obj, 'attempt');
+  if (attempt !== undefined) fields.attempt = attempt;
+  const maxAttempts = valueAt(obj, 'maxAttempts');
+  if (maxAttempts !== undefined) fields.maxAttempts = maxAttempts;
+  const delayMs = valueAt(obj, 'delayMs');
+  if (delayMs !== undefined) fields.delayMs = delayMs;
+  return fields;
+}
+
+function sdkErrorFields(err: unknown): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  if (err instanceof Error) {
+    fields.errorName = err.name;
+    fields.err = err.message;
+  } else if (typeof err === 'string') {
+    fields.err = err;
+  }
+
+  const obj = recordFromUnknown(err);
+  if (!obj) return fields;
+
+  const errorName = valueAt(obj, 'name');
+  if (fields.errorName === undefined && errorName !== undefined) fields.errorName = errorName;
+
+  const message = valueAt(obj, 'message');
+  if (fields.err === undefined && message !== undefined) fields.err = message;
+
+  const topCode = valueAt(obj, 'code');
+  if (topCode !== undefined) fields.errorCode = topCode;
+
+  const response = recordFromUnknown(obj.response);
+  const responseData = recordFromUnknown(response?.data);
+  const apiStatus = response?.status;
+  if (apiStatus !== undefined) fields.apiStatus = apiStatus;
+
+  const apiCode = responseData ? valueAt(responseData, 'code') : undefined;
+  if (apiCode !== undefined) fields.apiCode = apiCode;
+
+  const apiMsg = responseData
+    ? valueAt(responseData, 'msg') ?? valueAt(responseData, 'message')
+    : undefined;
+  if (apiMsg !== undefined) fields.apiMsg = apiMsg;
+
+  const apiError = responseData ? valueAt(responseData, 'error') : undefined;
+  if (apiError !== undefined) fields.apiError = apiError;
+
+  const requestId = responseData
+    ? valueAt(responseData, 'request_id') ?? valueAt(responseData, 'requestId')
+    : undefined;
+  if (requestId !== undefined) fields.requestId = requestId;
+
+  const config = recordFromUnknown(obj.config);
+  const method = config ? valueAt(config, 'method') : undefined;
+  if (method !== undefined) fields.method = method;
+
+  const url = config ? valueAt(config, 'url') : undefined;
+  if (url !== undefined) fields.url = url;
+
+  const request = recordFromUnknown(obj.request);
+  const path = request ? valueAt(request, 'path') : undefined;
+  if (path !== undefined) fields.requestPath = path;
+
+  return fields;
+}
+
+function recordFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  return value as Record<string, unknown>;
+}
+
+function valueAt(obj: Record<string, unknown>, key: string): unknown {
+  const value = obj[key];
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  return undefined;
 }
 
 function stringifyArgs(args: unknown[]): string {
@@ -223,7 +336,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     // the normalizer drops (e.g. action.form_value on CardKit 2.0 form submits).
     includeRawEvent: true,
     outbound: {
-      streamThrottleMs: 400,
+      // Long Codex SSE streams can otherwise generate many CardKit patch
+      // requests. Feishu occasionally drops/rejects one update; the SDK then
+      // stops patching that streaming card. Slow the patch cadence and roll
+      // over earlier so one card is less likely to hit element-size cliffs.
+      streamThrottleMs: STREAM_THROTTLE_MS,
+      streamThrottleChars: STREAM_THROTTLE_CHARS,
+      streamMaxElementChars: STREAM_MAX_ELEMENT_CHARS,
     },
     // SDK 1.65.0-alpha.3+ knobs.
     wsConfig: {

@@ -53,6 +53,7 @@ export interface FakeChannel {
     };
   };
   createCard(cardJson: unknown): Promise<{ cardId: string }>;
+  updateCard(messageId: string, cardJson: unknown): Promise<void>;
   updateCardById(cardId: string, cardJson: unknown, sequence: number): Promise<void>;
   send(chatId: string, content: unknown, options?: unknown): Promise<{ messageId: string }>;
   stream(chatId: string, input: unknown, options?: unknown): Promise<void>;
@@ -143,6 +144,9 @@ export function createFakeChannel(): FakeChannel {
       const cardId = `card_fake_${nextCard++}`;
       cardById.set(cardId, cardJson);
       return { cardId };
+    },
+    async updateCard(messageId: string, cardJson: unknown): Promise<void> {
+      requests.push({ method: 'im.v1.message.patch', params: { messageId, cardJson } });
     },
     async updateCardById(cardId: string, cardJson: unknown, sequence: number): Promise<void> {
       requests.push({ method: 'cardkit.v1.card.update', params: { cardId, cardJson, sequence } });

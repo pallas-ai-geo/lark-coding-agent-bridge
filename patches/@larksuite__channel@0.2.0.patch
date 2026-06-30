@@ -1,0 +1,106 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 1df17f14ebce99cff6deadd1d461310b895955cf..278dcb7fa72fb8dff47d84fac7749d6f4d8b62b3 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -2151,6 +2151,24 @@ const SUMMARY_MAX_CHARS = 50;
+ const ERROR_FOOTER = "\n\n— _(Generation interrupted)_";
+ const DEFAULT_MAX_ELEMENT_CHARS = 3e4;
+ const ELEMENT_ID = "stream_md";
++const STREAM_UPDATE_RETRY_DELAYS_MS = [250, 1e3, 2500];
++const STREAM_UPDATE_MAX_ATTEMPTS = STREAM_UPDATE_RETRY_DELAYS_MS.length + 1;
++function sleepStreamRetry(ms) {
++	return new Promise((resolve) => setTimeout(resolve, ms));
++}
++async function retryStreamUpdate(operation, onRetry) {
++	let attempt = 0;
++	while (true) {
++		try {
++			return await operation();
++		} catch (e) {
++			if (attempt >= STREAM_UPDATE_RETRY_DELAYS_MS.length) throw e;
++			const delayMs = STREAM_UPDATE_RETRY_DELAYS_MS[attempt++];
++			onRetry?.(e, attempt, STREAM_UPDATE_MAX_ATTEMPTS, delayMs);
++			await sleepStreamRetry(delayMs);
++		}
++	}
++}
+ /**
+ * Shorten a markdown content string into a single-line preview suitable for
+ * the card's `summary.content` — shown in chat lists / message previews.
+@@ -2293,7 +2311,10 @@ var MarkdownStreamControllerImpl = class {
+ 		await this.queue.enqueue(async () => {
+ 			if (this.streamingFailed) return;
+ 			try {
+-				await this.pushSnapshot();
++				await retryStreamUpdate(
++					() => this.pushSnapshot(),
++					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
++				);
+ 			} catch (e) {
+ 				this.streamingFailed = true;
+ 				this.sender.logger.warn?.("[stream] update failed", e);
+@@ -2345,7 +2366,10 @@ var MarkdownStreamControllerImpl = class {
+ 			await this.queue.drain();
+ 		}
+ 		try {
+-			await this.sender.finishStreamingCard(this.cardId, ++this.sequence, truncateSummary(this.content || DEFAULT_EMPTY));
++			await retryStreamUpdate(
++				() => this.sender.finishStreamingCard(this.cardId, ++this.sequence, truncateSummary(this.content || DEFAULT_EMPTY)),
++				(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] finish retry", e, { attempt, maxAttempts, delayMs })
++			);
+ 		} catch (e) {
+ 			this.sender.logger.warn?.("[stream] finishStreamingCard failed", e);
+ 		}
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 18b302b841a62dff6d040252e0d043d28857a7fd..53af646e0a8973fc0d9118c4e249689cf2457a75 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -2124,6 +2124,24 @@ const SUMMARY_MAX_CHARS = 50;
+ const ERROR_FOOTER = "\n\n— _(Generation interrupted)_";
+ const DEFAULT_MAX_ELEMENT_CHARS = 3e4;
+ const ELEMENT_ID = "stream_md";
++const STREAM_UPDATE_RETRY_DELAYS_MS = [250, 1e3, 2500];
++const STREAM_UPDATE_MAX_ATTEMPTS = STREAM_UPDATE_RETRY_DELAYS_MS.length + 1;
++function sleepStreamRetry(ms) {
++	return new Promise((resolve) => setTimeout(resolve, ms));
++}
++async function retryStreamUpdate(operation, onRetry) {
++	let attempt = 0;
++	while (true) {
++		try {
++			return await operation();
++		} catch (e) {
++			if (attempt >= STREAM_UPDATE_RETRY_DELAYS_MS.length) throw e;
++			const delayMs = STREAM_UPDATE_RETRY_DELAYS_MS[attempt++];
++			onRetry?.(e, attempt, STREAM_UPDATE_MAX_ATTEMPTS, delayMs);
++			await sleepStreamRetry(delayMs);
++		}
++	}
++}
+ /**
+ * Shorten a markdown content string into a single-line preview suitable for
+ * the card's `summary.content` — shown in chat lists / message previews.
+@@ -2266,7 +2284,10 @@ var MarkdownStreamControllerImpl = class {
+ 		await this.queue.enqueue(async () => {
+ 			if (this.streamingFailed) return;
+ 			try {
+-				await this.pushSnapshot();
++				await retryStreamUpdate(
++					() => this.pushSnapshot(),
++					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
++				);
+ 			} catch (e) {
+ 				this.streamingFailed = true;
+ 				this.sender.logger.warn?.("[stream] update failed", e);
+@@ -2318,7 +2339,10 @@ var MarkdownStreamControllerImpl = class {
+ 			await this.queue.drain();
+ 		}
+ 		try {
+-			await this.sender.finishStreamingCard(this.cardId, ++this.sequence, truncateSummary(this.content || DEFAULT_EMPTY));
++			await retryStreamUpdate(
++				() => this.sender.finishStreamingCard(this.cardId, ++this.sequence, truncateSummary(this.content || DEFAULT_EMPTY)),
++				(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] finish retry", e, { attempt, maxAttempts, delayMs })
++			);
+ 		} catch (e) {
+ 			this.sender.logger.warn?.("[stream] finishStreamingCard failed", e);
+ 		}

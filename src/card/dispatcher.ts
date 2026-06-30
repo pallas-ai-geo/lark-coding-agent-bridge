@@ -27,6 +27,7 @@ import {
  */
 const BRIDGE_CALLBACK_MARKER = '__bridge_cb';
 const LEGACY_CLAUDE_CALLBACK_MARKER = '__claude_cb';
+const CARD_ACTION_SETTLE_MS = 300;
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -87,6 +88,20 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
+  if (isApprovalTestPayload(payload)) {
+    await handleApprovalTestAction(
+      deps,
+      payload,
+      formValue,
+      accessDecision.reason,
+      scope,
+      threadId,
+      mode,
+      ids,
+    );
+    return;
+  }
+
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd) {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
@@ -144,6 +159,226 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   return;
+}
+
+async function handleApprovalTestAction(
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+  formValue: Record<string, unknown> | undefined,
+  accessReason: string,
+  scope: string,
+  threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
+  ids: ScopeMessageIds,
+): Promise<void> {
+  const decision = approvalDecision(payload.decision);
+  const approverOpenIds = stringArray(payload.approver_open_ids);
+  const operatorId = deps.evt.operator.openId;
+  const operatorName = deps.evt.operator.name || operatorId;
+  const comment = formString(formValue, 'approval_comment');
+  const allowed =
+    approverOpenIds.includes(operatorId) ||
+    accessReason === 'owner' ||
+    accessReason === 'allowed-admin';
+
+  log.info('cardAction', 'approval-test', {
+    decision,
+    allowed,
+    operator: operatorId.slice(-6),
+    accessReason,
+    messageId: deps.evt.messageId,
+  });
+
+  if (!allowed) {
+    await safeSend(
+      deps,
+      operatorId,
+      `审批测试：你没有权限操作这张卡片。\n\n你的 open_id：\`${operatorId}\``,
+    );
+    return;
+  }
+
+  const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+  const status =
+    decision === 'approve' ? '已通过' : decision === 'reject' ? '已驳回' : '已记录意见';
+  const color = decision === 'approve' ? 'green' : decision === 'reject' ? 'red' : 'blue';
+  const nextCard = approvalTestResultCard({
+    status,
+    color,
+    operatorName,
+    operatorId,
+    decidedAt: now,
+    requestId: typeof payload.request_id === 'string' ? payload.request_id : 'native-callback-test',
+    comment,
+  });
+
+  const channel = deps.channel;
+  const messageId = deps.evt.messageId;
+  enqueueApprovalStatus(deps, {
+    scope,
+    threadId,
+    mode,
+    ids,
+    decision,
+    status,
+    operatorId,
+    operatorName,
+    requestId: typeof payload.request_id === 'string' ? payload.request_id : 'native-callback-test',
+    comment,
+  });
+  void (async () => {
+    await delay(CARD_ACTION_SETTLE_MS);
+    try {
+      await channel.updateCard(messageId, nextCard);
+    } catch (err) {
+      log.fail('cardAction', err, { step: 'approval-test-update' });
+      await safeSend(
+        deps,
+        operatorId,
+        `审批测试：已收到你的${approvalActionLabel(decision)}，但更新卡片失败。`,
+      );
+    }
+  })();
+}
+
+function enqueueApprovalStatus(
+  deps: CardDispatchDeps,
+  input: {
+    scope: string;
+    threadId: string | undefined;
+    mode: 'p2p' | 'group' | 'topic';
+    ids: ScopeMessageIds;
+    decision: ApprovalDecision;
+    status: string;
+    operatorId: string;
+    operatorName: string;
+    requestId: string;
+    comment: string;
+  },
+): void {
+  const actionText =
+    input.decision === 'approve'
+      ? '继续处理该需求'
+      : input.decision === 'reject'
+        ? '不要继续处理该需求'
+        : '参考审批意见继续判断';
+  const synthetic: NormalizedMessage = {
+    messageId: deps.evt.messageId,
+    chatId: deps.evt.chatId,
+    chatType: input.mode === 'p2p' ? 'p2p' : 'group',
+    threadId: input.threadId,
+    rootId: input.ids.rootId,
+    senderId: input.operatorId,
+    senderName: input.operatorName,
+    content: [
+      '[approval-status]',
+      `审批状态：${input.status}`,
+      `审批动作：${input.decision}`,
+      `请求：${input.requestId}`,
+      `审批卡片：${deps.evt.messageId}`,
+      `审批人：${input.operatorName} (${input.operatorId})`,
+      ...(input.comment ? [`审批意见：${input.comment}`] : []),
+      `请根据审批结果${actionText}。`,
+    ].join('\n'),
+    rawContentType: 'approval_status',
+    resources: [],
+    mentions: [],
+    mentionAll: false,
+    mentionedBot: true,
+    createTime: Date.now(),
+  };
+  const queueSize = deps.pending.push(input.scope, synthetic);
+  log.info('cardAction', 'approval-status-queued', {
+    scope: input.scope,
+    queueSize,
+    decision: input.decision,
+    requestId: input.requestId,
+  });
+}
+
+type ApprovalDecision = 'approve' | 'reject' | 'comment';
+
+function approvalDecision(value: unknown): ApprovalDecision {
+  if (value === 'approve' || value === 'reject' || value === 'comment') return value;
+  return 'reject';
+}
+
+function approvalActionLabel(decision: ApprovalDecision): string {
+  return decision === 'approve' ? '通过' : decision === 'reject' ? '驳回' : '意见';
+}
+
+function isApprovalTestPayload(payload: Record<string, unknown>): boolean {
+  return payload.bridge_action === 'approval_test';
+}
+
+function stringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string');
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function formString(formValue: Record<string, unknown> | undefined, key: string): string {
+  const value = formValue?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+async function safeSend(deps: CardDispatchDeps, to: string, markdown: string): Promise<void> {
+  try {
+    await deps.channel.send(to, { markdown });
+  } catch (err) {
+    log.fail('cardAction', err, { step: 'approval-test-feedback' });
+  }
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+function approvalTestResultCard(input: {
+  status: string;
+  color: string;
+  operatorName: string;
+  operatorId: string;
+  decidedAt: string;
+  requestId: string;
+  comment: string;
+}): object {
+  const statusIcon = input.color === 'green' ? '✅' : input.color === 'red' ? '❌' : '📝';
+  return {
+    schema: '2.0',
+    config: {
+      summary: { content: `审批测试：${input.status}` },
+    },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content: [
+            `${statusIcon} **审批测试：${input.status}**`,
+            '',
+            `**状态**：${input.status}`,
+            `**操作人**：${escapeCardMd(input.operatorName)}（\`${escapeCode(input.operatorId)}\`）`,
+            `**时间**：${escapeCardMd(input.decidedAt)}`,
+            `**请求**：\`${escapeCode(input.requestId)}\``,
+            ...(input.comment ? [`**意见**：${escapeCardMd(input.comment)}`] : []),
+          ].join('\n'),
+        },
+      ],
+    },
+  };
+}
+
+function escapeCardMd(value: string): string {
+  return value.replace(/([*_`\\])/g, '\\$1');
+}
+
+function escapeCode(value: string): string {
+  return value.replace(/`/g, "'");
 }
 
 async function resolveScope(

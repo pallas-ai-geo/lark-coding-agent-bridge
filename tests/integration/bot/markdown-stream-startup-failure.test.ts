@@ -79,6 +79,21 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('configures conservative markdown streaming limits for long SSE output', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    expect(sdkMock.createLarkChannel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outbound: expect.objectContaining({
+          streamThrottleMs: 1200,
+          streamThrottleChars: 1500,
+          streamMaxElementChars: 12_000,
+        }),
+      }),
+    );
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);

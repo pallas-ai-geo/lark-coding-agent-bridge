@@ -67,7 +67,10 @@
     "onlyBuiltDependencies": [
       "esbuild",
       "protobufjs"
-    ]
+    ],
+    "patchedDependencies": {
+      "@larksuite/channel@0.2.0": "patches/@larksuite__channel@0.2.0.patch"
+    }
   },
   "keywords": [
     "feishu",
