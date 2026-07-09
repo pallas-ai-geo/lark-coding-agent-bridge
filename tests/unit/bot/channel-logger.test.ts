@@ -192,6 +192,41 @@ describe('Lark SDK logger noise filtering', () => {
     expect(entry.maxAttempts).toBe(4);
     expect(entry.delayMs).toBe(1000);
   });
+
+  it('logs stream update timeouts with timeout metadata', async () => {
+    const sdkLogger = (
+      channelModule as {
+        buildQuietLogger?: () => {
+          warn: (...args: unknown[]) => void;
+        };
+      }
+    ).buildQuietLogger?.();
+
+    sdkLogger?.warn('[stream] update failed', {
+      name: 'StreamUpdateTimeoutError',
+      message: 'stream update timed out after 8000ms',
+      code: 'STREAM_UPDATE_TIMEOUT',
+      timeoutMs: 8000,
+    });
+    await flushLogger();
+
+    const text = await readTodayLog();
+    const entry = JSON.parse(text) as {
+      phase: string;
+      event: string;
+      errorName: string;
+      err: string;
+      errorCode: string;
+      timeoutMs: number;
+    };
+
+    expect(entry.phase).toBe('sdk');
+    expect(entry.event).toBe('stream_update_failed');
+    expect(entry.errorName).toBe('StreamUpdateTimeoutError');
+    expect(entry.err).toBe('stream update timed out after 8000ms');
+    expect(entry.errorCode).toBe('STREAM_UPDATE_TIMEOUT');
+    expect(entry.timeoutMs).toBe(8000);
+  });
 });
 
 async function readTodayLog(): Promise<string> {

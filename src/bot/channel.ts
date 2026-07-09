@@ -72,6 +72,10 @@ const REACTION_CLEANUP_GRACE_MS = 1000;
 const STREAM_THROTTLE_MS = 1200;
 const STREAM_THROTTLE_CHARS = 1500;
 const STREAM_MAX_ELEMENT_CHARS = 12_000;
+const MARKDOWN_STREAM_LIVE_MAX_CHARS = 700;
+const MARKDOWN_STREAM_WINDOW_NOTICE =
+  '_为避免飞书长流式卡片卡住，运行中仅显示最新输出；完整结果会在结束后补发。_';
+const MARKDOWN_STREAM_FINAL_NOTICE = '_完整结果已在下一条消息补发。_';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -207,6 +211,9 @@ function sdkErrorFields(err: unknown): Record<string, unknown> {
 
   const topCode = valueAt(obj, 'code');
   if (topCode !== undefined) fields.errorCode = topCode;
+
+  const timeoutMs = valueAt(obj, 'timeoutMs');
+  if (timeoutMs !== undefined) fields.timeoutMs = timeoutMs;
 
   const response = recordFromUnknown(obj.response);
   const responseData = recordFromUnknown(response?.data);
@@ -1019,8 +1026,38 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       });
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
+      let finalMarkdownPost: string | undefined;
+      let streamWindowLogged = false;
       let producerStarted = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
+      const renderStreamMarkdown = (state: RunState): string => {
+        const filtered = filterForPrefs(state);
+        const body = renderText(filtered, streamTextRenderOptions);
+        if (body.length <= MARKDOWN_STREAM_LIVE_MAX_CHARS) return body;
+
+        if (!streamWindowLogged) {
+          streamWindowLogged = true;
+          log.info('stream', 'markdown-windowed', {
+            chars: body.length,
+            maxChars: MARKDOWN_STREAM_LIVE_MAX_CHARS,
+          });
+        }
+
+        if (state.terminal !== 'running') {
+          finalMarkdownPost = renderText(filtered, postTextRenderOptions);
+          return trimMarkdownTail(
+            renderText(filtered),
+            MARKDOWN_STREAM_LIVE_MAX_CHARS,
+            MARKDOWN_STREAM_FINAL_NOTICE,
+          );
+        }
+
+        return trimMarkdownTail(
+          renderText(filtered),
+          MARKDOWN_STREAM_LIVE_MAX_CHARS,
+          MARKDOWN_STREAM_WINDOW_NOTICE,
+        );
+      };
       const renderDone = processAgentStream(
         handle,
         eventStream,
@@ -1030,7 +1067,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state), streamTextRenderOptions));
+            await markdownCtrl.setContent(renderStreamMarkdown(state));
           }
         },
       );
@@ -1040,13 +1077,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           markdown: async (ctrl) => {
             producerStarted = true;
             markdownCtrl = ctrl;
-            await ctrl.setContent(renderText(filterForPrefs(latestState), streamTextRenderOptions));
+            await ctrl.setContent(renderStreamMarkdown(latestState));
             await renderDone;
           },
         },
         sendOpts,
       );
-      await awaitRenderAwareStream({
+      const fallbackSent = await awaitRenderAwareStream({
         mode: replyMode,
         streamDone,
         renderDone,
@@ -1058,6 +1095,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           }
         },
       });
+      if (!fallbackSent && finalMarkdownPost?.trim()) {
+        await channel.send(chatId, { markdown: finalMarkdownPost }, sendOpts);
+      }
     } else {
       // text mode: drain the agent stream without sending anything during
       // the run, then post the final rendered text once as a plain markdown
@@ -1214,7 +1254,7 @@ async function awaitRenderAwareStream(input: {
   renderDone: Promise<RunState>;
   producerStarted: () => boolean;
   fallback: (state: RunState) => Promise<void>;
-}): Promise<void> {
+}): Promise<boolean> {
   const streamResult = input.streamDone.then(
     () => ({ kind: 'stream' as const, ok: true as const }),
     (err) => ({ kind: 'stream' as const, ok: false as const, err }),
@@ -1230,7 +1270,7 @@ async function awaitRenderAwareStream(input: {
       const rendered = await renderResult;
       if (!rendered.ok) throw rendered.err;
       await runFallbackReply(input.mode, rendered.state, input.fallback);
-      return;
+      return true;
     }
     throw first.err;
   }
@@ -1238,13 +1278,13 @@ async function awaitRenderAwareStream(input: {
   if (first.kind === 'stream') {
     const rendered = await renderResult;
     if (!rendered.ok) throw rendered.err;
-    return;
+    return false;
   }
 
   if (!input.producerStarted()) {
     log.warn('stream', 'producer-not-started-before-agent-terminal', { mode: input.mode });
     await runFallbackReply(input.mode, first.state, input.fallback);
-    return;
+    return true;
   }
 
   const terminal = await Promise.race([
@@ -1261,9 +1301,10 @@ async function awaitRenderAwareStream(input: {
         log.fail('stream', result.err, { mode: input.mode, step: 'stream-terminal-late' });
       }
     });
-    return;
+    return false;
   }
   if (!terminal.ok) throw terminal.err;
+  return false;
 }
 
 async function runFallbackReply(
@@ -1276,6 +1317,19 @@ async function runFallbackReply(
   } catch (err) {
     log.fail('stream', err, { mode, step: 'fallback' });
   }
+}
+
+function trimMarkdownTail(markdown: string, maxChars: number, notice: string): string {
+  const prefix = `${notice}\n\n...\n\n`;
+  const budget = Math.max(200, maxChars - prefix.length);
+  let tail = markdown.slice(-budget);
+
+  const firstNewline = tail.indexOf('\n');
+  if (firstNewline > 0 && tail.length - firstNewline > Math.floor(budget * 0.7)) {
+    tail = tail.slice(firstNewline + 1);
+  }
+
+  return `${prefix}${tail.trimStart()}`;
 }
 
 function scheduleWorkingReactionCleanup(

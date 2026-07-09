@@ -1,21 +1,59 @@
 diff --git a/dist/index.cjs b/dist/index.cjs
-index 1df17f14ebce99cff6deadd1d461310b895955cf..278dcb7fa72fb8dff47d84fac7749d6f4d8b62b3 100644
+index 1df17f1..4a153f4 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
-@@ -2151,6 +2151,24 @@ const SUMMARY_MAX_CHARS = 50;
+@@ -2077,7 +2077,14 @@ var CardStreamControllerImpl = class {
+ 		if (!this._messageId) return;
+ 		const snapshot = this._current;
+ 		await this.queue.enqueue(async () => {
+-			await this.sender.patchCard(this._messageId, snapshot);
++			try {
++				await retryStreamUpdate(
++					() => this.sender.patchCard(this._messageId, snapshot),
++					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
++				);
++			} catch (e) {
++				this.sender.logger.warn?.("[stream] update failed", e);
++			}
+ 		});
+ 	}
+ 	async completeTerminal() {
+@@ -2151,6 +2158,49 @@ const SUMMARY_MAX_CHARS = 50;
  const ERROR_FOOTER = "\n\n— _(Generation interrupted)_";
  const DEFAULT_MAX_ELEMENT_CHARS = 3e4;
  const ELEMENT_ID = "stream_md";
++const STREAM_UPDATE_TIMEOUT_MS = 8e3;
 +const STREAM_UPDATE_RETRY_DELAYS_MS = [250, 1e3, 2500];
 +const STREAM_UPDATE_MAX_ATTEMPTS = STREAM_UPDATE_RETRY_DELAYS_MS.length + 1;
++var StreamUpdateTimeoutError = class extends Error {
++	constructor(timeoutMs) {
++		super(`stream update timed out after ${timeoutMs}ms`);
++		this.name = "StreamUpdateTimeoutError";
++		this.code = "STREAM_UPDATE_TIMEOUT";
++		this.timeoutMs = timeoutMs;
++	}
++};
 +function sleepStreamRetry(ms) {
 +	return new Promise((resolve) => setTimeout(resolve, ms));
++}
++async function withStreamUpdateTimeout(operation) {
++	let timer;
++	try {
++		return await Promise.race([
++			operation(),
++			new Promise((_, reject) => {
++				timer = setTimeout(() => reject(new StreamUpdateTimeoutError(STREAM_UPDATE_TIMEOUT_MS)), STREAM_UPDATE_TIMEOUT_MS);
++			})
++		]);
++	} finally {
++		if (timer) clearTimeout(timer);
++	}
 +}
 +async function retryStreamUpdate(operation, onRetry) {
 +	let attempt = 0;
 +	while (true) {
 +		try {
-+			return await operation();
++			return await withStreamUpdateTimeout(operation);
 +		} catch (e) {
 +			if (attempt >= STREAM_UPDATE_RETRY_DELAYS_MS.length) throw e;
 +			const delayMs = STREAM_UPDATE_RETRY_DELAYS_MS[attempt++];
@@ -24,10 +62,24 @@ index 1df17f14ebce99cff6deadd1d461310b895955cf..278dcb7fa72fb8dff47d84fac7749d6f
 +		}
 +	}
 +}
++function isStreamUpdateTimeoutError(e) {
++	return e instanceof StreamUpdateTimeoutError || e?.name === "StreamUpdateTimeoutError" || e?.code === "STREAM_UPDATE_TIMEOUT";
++}
  /**
  * Shorten a markdown content string into a single-line preview suitable for
  * the card's `summary.content` — shown in chat lists / message previews.
-@@ -2293,7 +2311,10 @@ var MarkdownStreamControllerImpl = class {
+@@ -2177,8 +2227,8 @@ function buildStreamingCard(initialText) {
+ 			streaming_mode: true,
+ 			summary: { content: INITIAL_SUMMARY },
+ 			streaming_config: {
+-				print_frequency_ms: { default: 70 },
+-				print_step: { default: 1 },
++				print_frequency_ms: { default: 20 },
++				print_step: { default: 64 },
+ 				print_strategy: "fast"
+ 			}
+ 		},
+@@ -2293,9 +2343,12 @@ var MarkdownStreamControllerImpl = class {
  		await this.queue.enqueue(async () => {
  			if (this.streamingFailed) return;
  			try {
@@ -37,9 +89,12 @@ index 1df17f14ebce99cff6deadd1d461310b895955cf..278dcb7fa72fb8dff47d84fac7749d6f
 +					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
 +				);
  			} catch (e) {
- 				this.streamingFailed = true;
+-				this.streamingFailed = true;
++				if (!isStreamUpdateTimeoutError(e)) this.streamingFailed = true;
  				this.sender.logger.warn?.("[stream] update failed", e);
-@@ -2345,7 +2366,10 @@ var MarkdownStreamControllerImpl = class {
+ 			}
+ 		});
+@@ -2345,7 +2398,10 @@ var MarkdownStreamControllerImpl = class {
  			await this.queue.drain();
  		}
  		try {
@@ -51,24 +106,89 @@ index 1df17f14ebce99cff6deadd1d461310b895955cf..278dcb7fa72fb8dff47d84fac7749d6f
  		} catch (e) {
  			this.sender.logger.warn?.("[stream] finishStreamingCard failed", e);
  		}
+@@ -2425,7 +2481,7 @@ var OutboundSender = class {
+ 				idType,
+ 				msgType: "post",
+ 				content: post,
+-				replyTo: i === 0 ? opts.replyTo : void 0,
++				replyTo: this.replyToForChunk(i, opts),
+ 				replyInThread: opts.replyInThread
+ 			});
+ 			ids.push(id);
+@@ -2441,13 +2497,16 @@ var OutboundSender = class {
+ 				idType,
+ 				msgType: "text",
+ 				content: { text: chunks[i] },
+-				replyTo: i === 0 ? opts.replyTo : void 0,
++				replyTo: this.replyToForChunk(i, opts),
+ 				replyInThread: opts.replyInThread
+ 			});
+ 			ids.push(id);
+ 		}
+ 		return this.makeResult(ids);
+ 	}
++	replyToForChunk(index, opts) {
++		return index === 0 || opts.replyInThread ? opts.replyTo : void 0;
++	}
+ 	async sendPost(to, idType, post, opts) {
+ 		return { messageId: await this.sendOneWithFallback({
+ 			to,
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 18b302b841a62dff6d040252e0d043d28857a7fd..53af646e0a8973fc0d9118c4e249689cf2457a75 100644
+index 18b302b..caa0b17 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -2124,6 +2124,24 @@ const SUMMARY_MAX_CHARS = 50;
+@@ -2050,7 +2050,14 @@ var CardStreamControllerImpl = class {
+ 		if (!this._messageId) return;
+ 		const snapshot = this._current;
+ 		await this.queue.enqueue(async () => {
+-			await this.sender.patchCard(this._messageId, snapshot);
++			try {
++				await retryStreamUpdate(
++					() => this.sender.patchCard(this._messageId, snapshot),
++					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
++				);
++			} catch (e) {
++				this.sender.logger.warn?.("[stream] update failed", e);
++			}
+ 		});
+ 	}
+ 	async completeTerminal() {
+@@ -2124,6 +2131,49 @@ const SUMMARY_MAX_CHARS = 50;
  const ERROR_FOOTER = "\n\n— _(Generation interrupted)_";
  const DEFAULT_MAX_ELEMENT_CHARS = 3e4;
  const ELEMENT_ID = "stream_md";
++const STREAM_UPDATE_TIMEOUT_MS = 8e3;
 +const STREAM_UPDATE_RETRY_DELAYS_MS = [250, 1e3, 2500];
 +const STREAM_UPDATE_MAX_ATTEMPTS = STREAM_UPDATE_RETRY_DELAYS_MS.length + 1;
++var StreamUpdateTimeoutError = class extends Error {
++	constructor(timeoutMs) {
++		super(`stream update timed out after ${timeoutMs}ms`);
++		this.name = "StreamUpdateTimeoutError";
++		this.code = "STREAM_UPDATE_TIMEOUT";
++		this.timeoutMs = timeoutMs;
++	}
++};
 +function sleepStreamRetry(ms) {
 +	return new Promise((resolve) => setTimeout(resolve, ms));
++}
++async function withStreamUpdateTimeout(operation) {
++	let timer;
++	try {
++		return await Promise.race([
++			operation(),
++			new Promise((_, reject) => {
++				timer = setTimeout(() => reject(new StreamUpdateTimeoutError(STREAM_UPDATE_TIMEOUT_MS)), STREAM_UPDATE_TIMEOUT_MS);
++			})
++		]);
++	} finally {
++		if (timer) clearTimeout(timer);
++	}
 +}
 +async function retryStreamUpdate(operation, onRetry) {
 +	let attempt = 0;
 +	while (true) {
 +		try {
-+			return await operation();
++			return await withStreamUpdateTimeout(operation);
 +		} catch (e) {
 +			if (attempt >= STREAM_UPDATE_RETRY_DELAYS_MS.length) throw e;
 +			const delayMs = STREAM_UPDATE_RETRY_DELAYS_MS[attempt++];
@@ -77,10 +197,24 @@ index 18b302b841a62dff6d040252e0d043d28857a7fd..53af646e0a8973fc0d9118c4e249689c
 +		}
 +	}
 +}
++function isStreamUpdateTimeoutError(e) {
++	return e instanceof StreamUpdateTimeoutError || e?.name === "StreamUpdateTimeoutError" || e?.code === "STREAM_UPDATE_TIMEOUT";
++}
  /**
  * Shorten a markdown content string into a single-line preview suitable for
  * the card's `summary.content` — shown in chat lists / message previews.
-@@ -2266,7 +2284,10 @@ var MarkdownStreamControllerImpl = class {
+@@ -2150,8 +2200,8 @@ function buildStreamingCard(initialText) {
+ 			streaming_mode: true,
+ 			summary: { content: INITIAL_SUMMARY },
+ 			streaming_config: {
+-				print_frequency_ms: { default: 70 },
+-				print_step: { default: 1 },
++				print_frequency_ms: { default: 20 },
++				print_step: { default: 64 },
+ 				print_strategy: "fast"
+ 			}
+ 		},
+@@ -2266,9 +2316,12 @@ var MarkdownStreamControllerImpl = class {
  		await this.queue.enqueue(async () => {
  			if (this.streamingFailed) return;
  			try {
@@ -90,9 +224,12 @@ index 18b302b841a62dff6d040252e0d043d28857a7fd..53af646e0a8973fc0d9118c4e249689c
 +					(e, attempt, maxAttempts, delayMs) => this.sender.logger.warn?.("[stream] update retry", e, { attempt, maxAttempts, delayMs })
 +				);
  			} catch (e) {
- 				this.streamingFailed = true;
+-				this.streamingFailed = true;
++				if (!isStreamUpdateTimeoutError(e)) this.streamingFailed = true;
  				this.sender.logger.warn?.("[stream] update failed", e);
-@@ -2318,7 +2339,10 @@ var MarkdownStreamControllerImpl = class {
+ 			}
+ 		});
+@@ -2318,7 +2371,10 @@ var MarkdownStreamControllerImpl = class {
  			await this.queue.drain();
  		}
  		try {
@@ -104,3 +241,30 @@ index 18b302b841a62dff6d040252e0d043d28857a7fd..53af646e0a8973fc0d9118c4e249689c
  		} catch (e) {
  			this.sender.logger.warn?.("[stream] finishStreamingCard failed", e);
  		}
+@@ -2398,7 +2454,7 @@ var OutboundSender = class {
+ 				idType,
+ 				msgType: "post",
+ 				content: post,
+-				replyTo: i === 0 ? opts.replyTo : void 0,
++				replyTo: this.replyToForChunk(i, opts),
+ 				replyInThread: opts.replyInThread
+ 			});
+ 			ids.push(id);
+@@ -2414,13 +2470,16 @@ var OutboundSender = class {
+ 				idType,
+ 				msgType: "text",
+ 				content: { text: chunks[i] },
+-				replyTo: i === 0 ? opts.replyTo : void 0,
++				replyTo: this.replyToForChunk(i, opts),
+ 				replyInThread: opts.replyInThread
+ 			});
+ 			ids.push(id);
+ 		}
+ 		return this.makeResult(ids);
+ 	}
++	replyToForChunk(index, opts) {
++		return index === 0 || opts.replyInThread ? opts.replyTo : void 0;
++	}
+ 	async sendPost(to, idType, post, opts) {
+ 		return { messageId: await this.sendOneWithFallback({
+ 			to,
