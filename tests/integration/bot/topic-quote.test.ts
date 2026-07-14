@@ -32,6 +32,7 @@ interface MessageHandlerMap {
 
 interface FakeLarkChannel {
   markdownContents: string[];
+  streamOptions: unknown[];
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -301,6 +302,54 @@ describe('topic message quote handling', () => {
     });
   });
 
+  it('keeps regular group reply output in the same reply thread', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+    h.agent.setEvents([
+      { type: 'text', delta: '处理好了' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_group_reply',
+        rootId: 'om_quote_target',
+        parentId: 'om_quote_target',
+        content: '@Bridge 看这条',
+      }),
+    );
+    await waitFor(() => h.channel.streamOptions.length === 1);
+
+    expect(h.channel.streamOptions[0]).toMatchObject({
+      replyTo: 'om_group_reply',
+      replyInThread: true,
+    });
+  });
+
+  it('keeps top-level regular group output at group level', async () => {
+    const h = await createHarness({ chatMode: 'group' });
+    h.agent.setEvents([
+      { type: 'text', delta: '处理好了' },
+      { type: 'done', terminationReason: 'normal' },
+    ]);
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_group_top',
+        content: '@Bridge 顶层消息',
+      }),
+    );
+    await waitFor(() => h.channel.streamOptions.length === 1);
+
+    expect(h.channel.streamOptions[0]).toMatchObject({
+      replyTo: 'om_group_top',
+    });
+    expect((h.channel.streamOptions[0] as { replyInThread?: boolean }).replyInThread).toBeUndefined();
+  });
+
   it('mentions the triggering user only after the final markdown reply completes', async () => {
     const h = await createHarness();
     h.agent.setEvents([
@@ -448,6 +497,7 @@ function createFakeLarkChannel(options: {
 } = {}): FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
   const markdownContents: string[] = [];
+  const streamOptions: unknown[] = [];
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
@@ -455,6 +505,7 @@ function createFakeLarkChannel(options: {
   return {
     handlers,
     markdownContents,
+    streamOptions,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -508,7 +559,8 @@ function createFakeLarkChannel(options: {
       return { state: 'connected', reconnectAttempts: 0 };
     },
     async send() {},
-    async stream(_chatId, input) {
+    async stream(_chatId, input, options) {
+      streamOptions.push(options);
       if (isMarkdownStreamInput(input)) {
         await input.markdown({
           setContent: async (content: string) => {
@@ -536,8 +588,8 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
 
 function message(input: {
   messageId: string;
-  rootId: string;
-  parentId: string;
+  rootId?: string;
+  parentId?: string;
   threadId?: string;
   content: string;
   mentionedBot?: boolean;
@@ -555,10 +607,10 @@ function message(input: {
     mentions: mentionedBot ? [{ key: '@_user_1', openId: 'ou_bot', name: 'Bridge', isBot: true }] : [],
     mentionAll: false,
     mentionedBot,
-    rootId: input.rootId,
-    parentId: input.parentId,
+    ...(input.rootId ? { rootId: input.rootId } : {}),
+    ...(input.parentId ? { parentId: input.parentId } : {}),
     ...(input.threadId ? { threadId: input.threadId } : {}),
-    replyToMessageId: input.parentId,
+    ...(input.parentId ? { replyToMessageId: input.parentId } : {}),
     createTime: 1760000001000,
   } as unknown as NormalizedMessage;
 }

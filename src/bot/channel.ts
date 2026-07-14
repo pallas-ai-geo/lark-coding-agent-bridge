@@ -780,7 +780,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   if (!firstMsg || !lastMsg) return;
 
   const chatId = firstMsg.chatId;
-  const threadId = firstMsg.threadId;
   const scopeThreadId = scopeThreadIdForMessage(firstMsg, mode);
 
   const resourceItems = batch.flatMap((m) =>
@@ -842,12 +841,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     threadHistoryTruncated: Boolean(threadHistory?.truncated),
   });
 
-  // For topic groups: thread the reply so it lands in the same topic as the
-  // user's message. Otherwise the SDK posts at top level and the user's
-  // topic discussion breaks visually.
+  // If the scope resolver found a Feishu thread anchor, keep every bridge
+  // reply on that thread. This covers both real topic groups and regular
+  // group reply threads; top-level group messages have no scopeThreadId and
+  // keep the legacy group-level reply behavior.
   const sendOpts = {
     replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
+    ...(mode !== 'p2p' && scopeThreadId ? { replyInThread: true } : {}),
   };
 
   const accessDecision =
