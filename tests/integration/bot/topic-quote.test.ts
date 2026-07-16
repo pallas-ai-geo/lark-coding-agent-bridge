@@ -34,6 +34,7 @@ interface MessageHandlerMap {
 interface FakeLarkChannel {
   sent: Array<{ chatId: string; content: unknown; options: unknown }>;
   streams: Array<{ chatId: string; options: unknown }>;
+  markdownContents: string[];
   botIdentity: { openId: string; name: string };
   rawClient: {
     request: ReturnType<typeof vi.fn>;
@@ -317,6 +318,71 @@ describe('topic message quote handling', () => {
     expect(h.channel.recallMessage).not.toHaveBeenCalled();
   });
 
+  it('mentions the triggering user only after a non-Codex final markdown stream completes', async () => {
+    const h = await createHarness({
+      chatMode: 'topic',
+      agentEvents: [
+        { type: 'text', delta: '处理好了' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_final_mention',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 处理一下',
+      }),
+    );
+    await waitFor(() => h.channel.markdownContents.some((content) => content.includes('<at id="ou_user"></at>')));
+
+    const finalContent = h.channel.markdownContents.at(-1) ?? '';
+    expect(finalContent).toContain('处理好了');
+    expect(finalContent.trim()).toMatch(/<at id="ou_user"><\/at>$/);
+    expect(count(finalContent, '<at id="ou_user"></at>')).toBe(1);
+    expect(h.channel.markdownContents.some((content) =>
+      content.includes('正在') && content.includes('<at id="ou_user"></at>'),
+    )).toBe(false);
+  });
+
+  it('mentions the triggering user on the dedicated Codex final markdown reply', async () => {
+    const h = await createHarness({
+      agentKind: 'codex',
+      chatMode: 'topic',
+      agentEvents: [
+        { type: 'text', delta: '过程更新' },
+        { type: 'final_text', content: '最终答案' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_codex_final_mention',
+        rootId: 'om_topic_root',
+        parentId: 'om_topic_root',
+        threadId: 'omt_topic',
+        content: '@Bridge 处理一下',
+      }),
+    );
+    await waitFor(() =>
+      h.channel.sent.some((sent) =>
+        (sent.content as { markdown?: string }).markdown?.includes('<at user_id="ou_user">User</at>'),
+      ),
+    );
+
+    expect(h.channel.markdownContents.join('\n')).not.toContain('<at id="ou_user"></at>');
+    const finalSent = h.channel.sent.at(-1)?.content as { markdown?: string } | undefined;
+    expect(finalSent?.markdown).toContain('最终答案');
+    expect(finalSent?.markdown?.trim()).toMatch(/<at user_id="ou_user">User<\/at>$/);
+  });
+
   it('skips a group message that does not mention the bot (requireMention default)', async () => {
     const h = await createHarness({ chatMode: 'group' });
 
@@ -525,6 +591,7 @@ describe('topic message quote handling', () => {
 });
 
 async function createHarness(options: {
+  agentKind?: 'claude' | 'codex';
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
@@ -542,7 +609,8 @@ async function createHarness(options: {
   const tmp = await createTmpProfile('topic-quote-');
   const workspace = await realpath(tmp.workspace);
   const baseProfileConfig = createDefaultProfileConfig({
-    agentKind: 'claude',
+    agentKind: options.agentKind ?? 'claude',
+    ...(options.agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
     accounts: {
       app: {
         id: 'cli_test',
@@ -611,6 +679,7 @@ function createFakeLarkChannel(options: {
   const handlers: MessageHandlerMap = {};
   const sent: Array<{ chatId: string; content: unknown; options: unknown }> = [];
   const streams: Array<{ chatId: string; options: unknown }> = [];
+  const markdownContents: string[] = [];
   const chatMode = options.chatMode ?? 'topic';
   const quotedMessages = options.quotedMessages ?? {
     om_topic_root: 'topic root content',
@@ -621,6 +690,7 @@ function createFakeLarkChannel(options: {
     handlers,
     sent,
     streams,
+    markdownContents,
     botIdentity: { openId: 'ou_bot', name: 'Bridge' },
     rawClient: {
       request: vi.fn(async () => ({ data: { items: [] } })),
@@ -670,7 +740,11 @@ function createFakeLarkChannel(options: {
     async stream(chatId, input, options) {
       streams.push({ chatId, options });
       if (isMarkdownStreamInput(input)) {
-        await input.markdown({ setContent: async () => {} });
+        await input.markdown({
+          setContent: async (content: string) => {
+            markdownContents.push(content);
+          },
+        });
       }
       return { messageId: `om_stream_${streams.length}` };
     },
@@ -732,6 +806,10 @@ interface MarkdownStreamInput {
 
 function isMarkdownStreamInput(input: unknown): input is MarkdownStreamInput {
   return Boolean(input && typeof input === 'object' && 'markdown' in input);
+}
+
+function count(input: string, pattern: string): number {
+  return input.split(pattern).length - 1;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 1500): Promise<void> {

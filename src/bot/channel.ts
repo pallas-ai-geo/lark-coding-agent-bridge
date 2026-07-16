@@ -19,7 +19,7 @@ import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, type RunCardRenderOptions } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -28,7 +28,7 @@ import {
   reduce,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderText, type RunTextRenderOptions } from '../card/text-renderer';
 import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
@@ -1114,19 +1114,34 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions = callbackAuth
-    ? {
-        signCallback: (action: string) =>
-          callbackAuth.sign({
-            runId: execution.runId,
-            scope,
-            chatId,
-            operatorOpenId: firstMsg.senderId,
-            action,
-            policyFingerprint: flow.policy.policyFingerprint,
-            ttlMs: 24 * 60 * 60 * 1000,
-          }),
-      }
+  const finalMention = finalSenderMention(lastMsg);
+  const callbackCardRenderOptions: RunCardRenderOptions = {
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: flow.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+  };
+  const finalCardRenderOptions: RunCardRenderOptions = {
+    ...callbackCardRenderOptions,
+    ...(finalMention ? { finalMentionMarkdown: finalMention.cardMarkdown } : {}),
+  };
+  const streamCardRenderOptions =
+    controls.profileConfig.agentKind === 'codex' ? callbackCardRenderOptions : finalCardRenderOptions;
+  const streamTextRenderOptions: RunTextRenderOptions = finalMention
+    ? { finalMentionMarkdown: finalMention.cardMarkdown }
+    : {};
+  const postTextRenderOptions: RunTextRenderOptions = finalMention
+    ? { finalMentionMarkdown: finalMention.postMarkdown }
     : {};
 
   // For non-card modes Claude's output doesn't surface visually until either
@@ -1180,7 +1195,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           state: finalAnswerOnlyState(finalState),
           replyMode,
           sendOpts,
-          cardRenderOptions,
+          cardRenderOptions: finalCardRenderOptions,
+          textRenderOptions: postTextRenderOptions,
         });
         return;
       }
@@ -1202,7 +1218,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         async (state) => {
           latestState = state;
           if (cardCtrl) {
-            await cardCtrl.update(renderCard(filterForPrefs(state), cardRenderOptions));
+            await cardCtrl.update(renderCard(filterForPrefs(state), streamCardRenderOptions));
           }
         },
       );
@@ -1210,11 +1226,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         {
           card: {
-            initial: renderCard(initialState, cardRenderOptions),
+            initial: renderCard(initialState, streamCardRenderOptions),
             producer: async (ctrl) => {
               producerStarted = true;
               cardCtrl = ctrl;
-              await ctrl.update(renderCard(filterForPrefs(latestState), cardRenderOptions));
+              await ctrl.update(renderCard(filterForPrefs(latestState), streamCardRenderOptions));
               await renderDone;
             },
           },
@@ -1232,7 +1248,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             if (renderText(filterForPrefs(state)).trim() === '') return;
             await channel.send(
               chatId,
-              { card: renderCard(filterForPrefs(state), cardRenderOptions) },
+              { card: renderCard(filterForPrefs(state), finalCardRenderOptions) },
               sendOpts,
             );
           },
@@ -1250,7 +1266,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           state: finalAnswerOnlyState(filterForPrefs(latestState)),
           replyMode,
           sendOpts,
-          cardRenderOptions,
+          cardRenderOptions: finalCardRenderOptions,
+          textRenderOptions: postTextRenderOptions,
         });
       }
     } else if (replyMode === 'markdown') {
@@ -1262,6 +1279,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       const renderStreamMarkdown = (state: RunState): string => {
         const filtered = filterForPrefs(state);
         const body = renderText(filtered);
+        if (
+          state.terminal !== 'running' &&
+          controls.profileConfig.agentKind !== 'codex' &&
+          body.length <= MARKDOWN_STREAM_LIVE_MAX_CHARS
+        ) {
+          return renderText(filtered, streamTextRenderOptions);
+        }
         if (body.length <= MARKDOWN_STREAM_LIVE_MAX_CHARS) return body;
 
         if (!streamWindowLogged) {
@@ -1274,7 +1298,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
         if (state.terminal !== 'running') {
           if (controls.profileConfig.agentKind !== 'codex') {
-            finalMarkdownPost = body;
+            finalMarkdownPost = renderText(filtered, postTextRenderOptions);
           }
           return trimMarkdownTail(body, MARKDOWN_STREAM_LIVE_MAX_CHARS, MARKDOWN_STREAM_FINAL_NOTICE);
         }
@@ -1314,7 +1338,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
+            const body = renderText(filterForPrefs(state), postTextRenderOptions);
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
@@ -1333,10 +1357,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           state: finalAnswerOnlyState(filterForPrefs(latestState)),
           replyMode,
           sendOpts,
-          cardRenderOptions,
+          cardRenderOptions: finalCardRenderOptions,
+          textRenderOptions: postTextRenderOptions,
         });
       } else if (finalMarkdownPost?.trim()) {
-        const result = await channel.send(chatId, { markdown: finalMarkdownPost }, sendOpts);
+        const result = await channel.send(
+          chatId,
+          { markdown: finalMarkdownPost },
+          sendOpts,
+        );
         requireMessageReceipt(result, 'markdown');
         log.info('outbound', 'sent', outboundLogFields(
           { scope, replyMode, sendOpts },
@@ -1367,7 +1396,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
             : filterForPrefs(finalState),
         replyMode,
         sendOpts,
-        cardRenderOptions,
+        cardRenderOptions: finalCardRenderOptions,
+        textRenderOptions: postTextRenderOptions,
       });
     }
   } catch (err) {
@@ -1416,9 +1446,10 @@ async function sendFinalReply(input: {
   state: RunState;
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  cardRenderOptions: { signCallback?: (action: string) => string };
+  cardRenderOptions: RunCardRenderOptions;
+  textRenderOptions?: RunTextRenderOptions;
 }): Promise<void> {
-  const body = renderText(input.state);
+  const body = renderText(input.state, input.textRenderOptions);
 
   // Nothing deliverable to send (agent produced no text on a clean finish;
   // error/interrupt/timeout keep `body` non-empty via their notices). Skip
@@ -1461,6 +1492,32 @@ function requireMessageReceipt(result: { messageId?: string }, type: string): vo
   if (!result.messageId?.trim()) {
     throw new Error(`final ${type} reply missing message receipt`);
   }
+}
+
+function finalSenderMention(
+  msg: NormalizedMessage,
+): { cardMarkdown: string; postMarkdown: string } | undefined {
+  if (msg.chatType === 'p2p') return undefined;
+  if (!msg.senderId) return undefined;
+  if (senderTypeOf(msg) === 'bot') return undefined;
+
+  const id = escapeXmlAttribute(msg.senderId);
+  const name = escapeXmlText(msg.senderName ?? '');
+  return {
+    cardMarkdown: `<at id="${id}"></at>`,
+    postMarkdown: `<at user_id="${id}">${name}</at>`,
+  };
+}
+
+function escapeXmlAttribute(value: string): string {
+  return escapeXmlText(value).replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function escapeXmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 async function sendCotDegradedNotice(input: {
