@@ -94,7 +94,7 @@ describe('markdown stream startup failures', () => {
     );
   });
 
-  it('windows long markdown streams and posts the full final reply separately', async () => {
+  it('streams long markdown without local windowing', async () => {
     const streamed: string[] = [];
     const h = await createHarness({
       stream: async (_chatId, input) => {
@@ -113,6 +113,7 @@ describe('markdown stream startup failures', () => {
     const tail = '最终结论在这里';
     h.agent.setEvents([
       { type: 'text', delta: `${longHead}\n${tail}` },
+      { type: 'final_text', content: 'FINAL_SENTINEL' },
       { type: 'done', terminationReason: 'normal' },
     ]);
     await startTestBridge(h);
@@ -120,16 +121,15 @@ describe('markdown stream startup failures', () => {
     await h.channel.handlers.message?.(message('om_long', 'long'));
     await waitFor(() => h.channel.sent.length === 1);
 
-    expect(streamed.some((content) => content.includes('运行中仅显示最新输出'))).toBe(true);
     const lastStreamed = streamed.at(-1) ?? '';
-    expect(lastStreamed).toContain('完整结果已在下一条消息补发');
+    expect(lastStreamed).not.toContain('运行中仅显示最新输出');
+    expect(lastStreamed).not.toContain('补发');
+    expect(lastStreamed).toContain(longHead);
     expect(lastStreamed).toContain(tail);
-    expect(lastStreamed).not.toContain(longHead);
-    expect(lastStreamed.length).toBeLessThan(800);
 
     const final = lastMarkdown(h.channel);
-    expect(final).toContain(longHead);
-    expect(final).toContain(tail);
+    expect(final).toContain('FINAL_SENTINEL');
+    expect(final).not.toContain(longHead);
   });
 
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {

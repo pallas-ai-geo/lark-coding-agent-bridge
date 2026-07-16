@@ -79,10 +79,6 @@ import { fetchThreadHistory } from './thread-history';
 const DEBOUNCE_MS = 600;
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
-const MARKDOWN_STREAM_LIVE_MAX_CHARS = 700;
-const MARKDOWN_STREAM_WINDOW_NOTICE =
-  '_为避免飞书长流式卡片卡住，运行中仅显示最新输出；完整结果会在结束后补发。_';
-const MARKDOWN_STREAM_FINAL_NOTICE = '_完整结果已在下一条消息补发。_';
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -1159,38 +1155,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
     } else if (replyMode === 'markdown') {
       let latestState: RunState = initialState;
-      let finalMarkdownPost: string | undefined;
-      let streamWindowLogged = false;
       let producerStarted = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
       const renderStreamMarkdown = (state: RunState): string => {
         const filtered = filterForPrefs(state);
-        const body = renderText(filtered);
-        if (
-          state.terminal !== 'running' &&
-          controls.profileConfig.agentKind !== 'codex' &&
-          body.length <= MARKDOWN_STREAM_LIVE_MAX_CHARS
-        ) {
+        if (state.terminal !== 'running' && controls.profileConfig.agentKind !== 'codex') {
           return renderText(filtered, streamTextRenderOptions);
         }
-        if (body.length <= MARKDOWN_STREAM_LIVE_MAX_CHARS) return body;
-
-        if (!streamWindowLogged) {
-          streamWindowLogged = true;
-          log.info('stream', 'markdown-windowed', {
-            chars: body.length,
-            maxChars: MARKDOWN_STREAM_LIVE_MAX_CHARS,
-          });
-        }
-
-        if (state.terminal !== 'running') {
-          if (controls.profileConfig.agentKind !== 'codex') {
-            finalMarkdownPost = renderText(filtered, postTextRenderOptions);
-          }
-          return trimMarkdownTail(body, MARKDOWN_STREAM_LIVE_MAX_CHARS, MARKDOWN_STREAM_FINAL_NOTICE);
-        }
-
-        return trimMarkdownTail(body, MARKDOWN_STREAM_LIVE_MAX_CHARS, MARKDOWN_STREAM_WINDOW_NOTICE);
+        return renderText(filtered);
       };
       const renderDone = processAgentStream(
         handle,
@@ -1247,19 +1219,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           cardRenderOptions: finalCardRenderOptions,
           textRenderOptions: postTextRenderOptions,
         });
-      } else if (finalMarkdownPost?.trim()) {
-        const result = await channel.send(
-          chatId,
-          { markdown: finalMarkdownPost },
-          sendOpts,
-        );
-        requireMessageReceipt(result, 'markdown');
-        log.info('outbound', 'sent', outboundLogFields(
-          { scope, replyMode, sendOpts },
-          'markdown',
-          finalMarkdownPost,
-          result,
-        ));
       }
     } else {
       // text mode: drain the agent stream without sending anything during
@@ -1647,19 +1606,6 @@ async function runFallbackReply(
   } catch (err) {
     log.fail('stream', err, { mode, step: 'fallback' });
   }
-}
-
-function trimMarkdownTail(markdown: string, maxChars: number, notice: string): string {
-  const prefix = `${notice}\n\n...\n\n`;
-  const budget = Math.max(200, maxChars - prefix.length);
-  let tail = markdown.slice(-budget);
-
-  const firstNewline = tail.indexOf('\n');
-  if (firstNewline > 0 && tail.length - firstNewline > Math.floor(budget * 0.7)) {
-    tail = tail.slice(firstNewline + 1);
-  }
-
-  return `${prefix}${tail.trimStart()}`;
 }
 
 function scheduleWorkingReactionCleanup(
