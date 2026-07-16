@@ -15,21 +15,36 @@ describe('Lark channel threaded chunk sends', () => {
 
     expect(reply.mock.calls.length).toBeGreaterThan(1);
     expect(create).not.toHaveBeenCalled();
-    for (const [params] of reply.mock.calls) {
+    for (const [index, [params]] of reply.mock.calls.entries()) {
       expect(params).toMatchObject({
-        path: { message_id: 'om_parent' },
+        path: { message_id: index === 0 ? 'om_parent' : `om_reply_${index + 1}` },
         data: { reply_in_thread: true },
       });
     }
   });
 
-  it('keeps legacy non-thread chunk behavior unchanged', async () => {
+  it('keeps every long anchored reply chunk chained to the previous chunk', async () => {
     const { channel, reply, create } = fakeChannel();
 
     await channel.send('oc_chat', { markdown: longBody() }, { replyTo: 'om_parent' });
 
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls.length).toBeGreaterThan(0);
+    expect(reply.mock.calls.length).toBeGreaterThan(1);
+    expect(create).not.toHaveBeenCalled();
+    for (const [index, [params]] of reply.mock.calls.entries()) {
+      expect(params).toMatchObject({
+        path: { message_id: index === 0 ? 'om_parent' : `om_reply_${index + 1}` },
+      });
+      expect(params.data.reply_in_thread).toBeUndefined();
+    }
+  });
+
+  it('keeps plain fresh send continuations as top-level messages', async () => {
+    const { channel, reply, create } = fakeChannel();
+
+    await channel.send('oc_chat', { markdown: longBody() });
+
+    expect(reply).not.toHaveBeenCalled();
+    expect(create.mock.calls.length).toBeGreaterThan(1);
   });
 });
 

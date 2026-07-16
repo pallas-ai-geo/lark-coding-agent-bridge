@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
+import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -27,6 +28,7 @@ import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templa
 import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
+  getCotMessages,
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRequireMentionInGroup,
@@ -34,7 +36,13 @@ import {
   getShowToolCalls,
   secretKeyForApp,
 } from '../config/schema';
-import type { ProfileAccess, ProfileConfig } from '../config/profile-schema';
+import type {
+  LarkCliIdentityPreset,
+  ProfileAccess,
+  ProfileConfig,
+  ProfileMode,
+} from '../config/profile-schema';
+import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
@@ -296,7 +304,7 @@ export async function runCommandHandler(
  */
 async function reply(ctx: CommandContext, markdown: string): Promise<void> {
   try {
-    await ctx.channel.send(ctx.msg.chatId, { markdown }, { replyTo: ctx.msg.messageId });
+    await ctx.channel.send(ctx.msg.chatId, { markdown }, commandReplyOptions(ctx));
   } catch (err) {
     log.fail('command', err, { step: 'reply' });
     reportMetric('command_fail', 1, { step: 'reply' });
@@ -305,13 +313,20 @@ async function reply(ctx: CommandContext, markdown: string): Promise<void> {
       await ctx.channel.send(
         ctx.msg.chatId,
         { markdown: AUDIT_SAFE_COMMAND_REPLY },
-        { replyTo: ctx.msg.messageId },
+        commandReplyOptions(ctx),
       );
     } catch (fallbackErr) {
       log.fail('command', fallbackErr, { step: 'reply-audit-fallback' });
       reportMetric('command_fail', 1, { step: 'reply-audit-fallback' });
     }
   }
+}
+
+function commandReplyOptions(ctx: CommandContext): { replyTo: string; replyInThread?: true } {
+  return {
+    replyTo: ctx.msg.messageId,
+    ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { replyInThread: true as const } : {}),
+  };
 }
 
 function isMessageAuditReject(err: unknown): boolean {
@@ -440,7 +455,7 @@ async function handleWsList(ctx: CommandContext): Promise<void> {
     currentCwd,
     named,
   );
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
@@ -586,7 +601,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
         };
       });
       const card = resumeCard(cwd, entries);
-      await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+      await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
       return;
     }
     if (entry?.threadId && identity) {
@@ -598,7 +613,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const card = resumeCard(cwd, []);
-    await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
     return;
   }
 
@@ -616,7 +631,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     current: s.sessionId === currentSession?.sessionId,
   }));
   const card = resumeCard(cwd, entries);
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
@@ -837,13 +852,14 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
+    activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),
     activeCommentScopes: ctx.activeRuns.scopes().filter((scope) => scope.startsWith('comment:')),
     queue: ctx.processPool?.snapshot(),
     ownerState: formatOwnerState(ctx),
     scope: ctx.scope,
     chatMode: ctx.chatMode,
   });
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 function formatOwnerState(ctx: CommandContext): string {
@@ -1236,6 +1252,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
                   continue;
                 }
                 if (evt.type === 'text') echoText += evt.delta;
+                if (evt.type === 'final_text') echoText = evt.content;
                 state = reduce(state, evt);
                 await flush();
                 // Don't wait for stdout to close — some claude versions hang
@@ -1262,6 +1279,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
           continue;
         }
         if (evt.type === 'text') echoText += evt.delta;
+        if (evt.type === 'final_text') echoText = evt.content;
         state = reduce(state, evt);
         if (state.terminal !== 'running') break;
       }
@@ -1340,7 +1358,7 @@ function formatDoctorEchoStatus(echoText: string, state: RunState): string {
 
 async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
   const card = helpCard(ctx.agent.displayName);
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 // ─── /account ─────────────────────────────────────────────────────────────
@@ -1370,7 +1388,7 @@ async function showCurrent(ctx: CommandContext): Promise<void> {
     botName: ctx.channel.botIdentity?.name,
     tenant: ctx.controls.cfg.accounts.app.tenant,
   });
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }
 
 async function showForm(ctx: CommandContext): Promise<void> {
@@ -1378,7 +1396,7 @@ async function showForm(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
     await recallMessage(ctx, ctx.msg.messageId);
   }
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function cancelAccount(ctx: CommandContext): Promise<void> {
@@ -1402,6 +1420,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
   const formMsgId = ctx.msg.messageId;
   const channel = ctx.channel;
   const restart = ctx.controls.restart;
+  const retryReplyOptions = commandReplyOptions(ctx);
 
   // CRITICAL: detach the work from the cardAction handler. Lark's client
   // keeps the form locked while the handler is pending — if we await the
@@ -1447,7 +1466,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
         initialTenant: tenant,
         prefillAppId: appId,
       });
-      await sendManagedCard(channel, chatId, retry).catch((err) =>
+      await sendManagedCard(channel, chatId, retry, retryReplyOptions).catch((err) =>
         console.warn('[account] post retry form failed:', err),
       );
     };
@@ -1781,8 +1800,15 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
   const access = ctx.controls.profileConfig.access;
   const card = configFormCard({
+    agentKind: ctx.controls.profileConfig.agentKind,
+    mode: ctx.controls.profileConfig.mode,
+    model: normalizeModelSelection(
+      ctx.controls.profileConfig.agentKind,
+      ctx.controls.cfg.preferences?.model,
+    ),
     messageReply: getMessageReplyMode(ctx.controls.cfg),
     showToolCalls: getShowToolCalls(ctx.controls.cfg),
+    cotMessages: getCotMessages(ctx.controls.cfg),
     maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
@@ -1793,7 +1819,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     knownChats: ctx.controls.knownChats ?? [],
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function showResultCardInPlace(
@@ -1805,7 +1831,7 @@ async function showResultCardInPlace(
     await updateManagedCard(ctx.channel, formMsgId, card);
   } catch (err) {
     log.warn('command', 'config-card-update-fallback', { err: String(err) });
-    await sendManagedCard(ctx.channel, ctx.msg.chatId, card).catch((fallbackErr) =>
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx)).catch((fallbackErr) =>
       log.warn('command', 'config-card-fallback-send-failed', {
         err: String(fallbackErr),
       }),
@@ -1830,9 +1856,28 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const messageReply: MessageReplyMode =
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
       ? (rawReply as MessageReplyMode)
-      : 'card';
+      : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
+  // Parse the model picker. Unexpected / empty values keep the current
+  // selection. Store `undefined` for the "default" sentinel to keep config
+  // tidy (resolveModelArg treats both the same way).
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  const rawModel = String(fv.model ?? '').trim();
+  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
+  const modelSelection = modelValid
+    ? rawModel
+    : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
+  const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
+  const rawCotMessages = String(fv.cot_messages ?? '').trim();
+  const cotMessages =
+    rawCotMessages === 'brief'
+      ? 'brief'
+      : rawCotMessages === 'detailed' || rawCotMessages === 'on'
+        ? 'detailed'
+        : rawCotMessages === 'off'
+          ? 'off'
+          : getCotMessages(ctx.controls.cfg);
   // Parse max_concurrent_runs; invalid input falls back to current value.
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
@@ -1864,13 +1909,26 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
   else if (rawRequireMention === 'no') requireMentionInGroup = false;
   else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
+  // Parse deployment mode. Empty / unexpected keeps current.
+  const rawMode = String(fv.deploy_mode ?? '').trim();
+  const mode: ProfileMode =
+    rawMode === 'team' || rawMode === 'personal'
+      ? rawMode
+      : ctx.controls.profileConfig.mode;
   const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
   const larkCliIdentity =
     rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
       ? rawLarkCliIdentity
       : ctx.controls.profileConfig.larkCli.identityPreset;
-  const previousLarkCliIdentity = ctx.controls.profileConfig.larkCli.identityPreset;
-  const larkCliIdentityChanged = larkCliIdentity !== previousLarkCliIdentity;
+  // Effective preset = what actually gets applied to lark-cli. Team mode forces
+  // bot-only regardless of the stored identity select; the select value is still
+  // saved verbatim so it comes back when switching to personal mode. Re-apply
+  // the lark-cli policy whenever the *effective* preset changes (covers both a
+  // direct identity-select change and a personal↔team flip).
+  const nextEffectiveIdentity: LarkCliIdentityPreset =
+    mode === 'team' ? 'bot-only' : larkCliIdentity;
+  const previousEffectiveIdentity = effectiveLarkCliIdentity(ctx.controls.profileConfig);
+  const larkCliIdentityChanged = nextEffectiveIdentity !== previousEffectiveIdentity;
 
   const formMsgId = ctx.msg.messageId;
   const access = ctx.controls.profileConfig.access;
@@ -1889,6 +1947,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
+      model,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -1896,6 +1955,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       // explicitly picks any option gets out of the legacy-coerce path.
       messageReplyMigrated: true,
       showToolCalls,
+      cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1906,23 +1966,23 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     try {
       if (larkCliIdentityChanged) {
         failureStep = 'config.lark-cli-policy';
-        const applied = await applyConfigLarkCliIdentityPolicy(ctx, larkCliIdentity);
+        const applied = await applyConfigLarkCliIdentityPolicy(ctx, nextEffectiveIdentity);
         if (!applied) {
           throw new Error('lark-cli identity policy apply failed');
         }
         larkCliPolicyApplied = true;
         failureStep = 'config.save';
       }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity);
+      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode);
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
-        const rolledBack = await applyConfigLarkCliIdentityPolicy(ctx, previousLarkCliIdentity);
+        const rolledBack = await applyConfigLarkCliIdentityPolicy(ctx, previousEffectiveIdentity);
         if (!rolledBack) {
           rollbackFailed = true;
           log.warn('command', 'lark-cli-identity-policy-rollback-failed', {
             profile: ctx.controls.profile,
-            identity: previousLarkCliIdentity,
+            identity: previousEffectiveIdentity,
           });
         }
       }
@@ -1938,8 +1998,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     log.info('command', 'config-saved', {
+      mode,
       messageReply,
       showToolCalls,
+      cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
@@ -1953,8 +2015,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ctx,
       formMsgId,
       configSavedCard({
+        agentKind,
+        mode,
+        model: modelSelection,
         messageReply,
         showToolCalls,
+        cotMessages,
         maxConcurrentRuns,
         runIdleTimeoutMinutes,
         requireMentionInGroup,
@@ -2100,7 +2166,10 @@ async function savePreferencesConfig(
   preferences: AppPreferences,
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
+  mode: ProfileMode,
 ): Promise<void> {
+  // Store the user's identity selection verbatim (not the team-mode-forced
+  // effective preset) so it comes back into effect when switching to personal.
   const larkCli = {
     identityPreset: larkCliIdentity,
     localUserImport: {
@@ -2114,6 +2183,7 @@ async function savePreferencesConfig(
     if (!root) {
       ctx.controls.cfg.preferences = preferences;
       ctx.controls.profileConfig.larkCli = larkCli;
+      ctx.controls.profileConfig.mode = mode;
       await saveConfig(ctx.controls.cfg, ctx.controls.configPath);
       return;
     }
@@ -2123,6 +2193,7 @@ async function savePreferencesConfig(
     const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
     root.profiles[ctx.controls.profile] = {
       ...profile,
+      mode,
       preferences: {
         ...profile.preferences,
         ...profilePreferences,
