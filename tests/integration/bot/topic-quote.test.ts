@@ -405,7 +405,7 @@ describe('topic message quote handling', () => {
     expect(h.channel.recallMessage).not.toHaveBeenCalled();
   });
 
-  it('auto-runs topic root messages by default without requiring later replies to mention the bot', async () => {
+  it('requires topic root messages to mention the bot', async () => {
     const h = await createHarness({ chatMode: 'topic' });
 
     await startTestBridge(h);
@@ -420,23 +420,23 @@ describe('topic message quote handling', () => {
         mentionedBot: false,
       }),
     );
-    await waitFor(() => h.agent.runOptions.length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 80));
 
-    expect(h.agent.runOptions[0]?.prompt).toContain('新话题：帮我看一下这个部署');
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.channel.streams).toHaveLength(0);
 
     await h.channel.handlers.message?.(
       message({
-        messageId: 'om_topic_reply',
-        rootId: 'om_topic_root',
-        parentId: 'om_topic_root',
+        messageId: 'om_topic_root_at',
+        rootId: 'om_topic_root_at',
+        parentId: 'om_topic_root_at',
         threadId: 'omt_topic',
-        content: '补充一句，但没有 @',
-        mentionedBot: false,
+        content: '@Bridge 新话题：帮我看一下这个部署',
       }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 750));
+    await waitFor(() => h.agent.runOptions.length === 1);
 
-    expect(h.agent.runOptions).toHaveLength(1);
+    expect(h.agent.runOptions[0]?.prompt).toContain('新话题：帮我看一下这个部署');
   });
 
   it('keeps regular group reply quotes as quoted context', async () => {
