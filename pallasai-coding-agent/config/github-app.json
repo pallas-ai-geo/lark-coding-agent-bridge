@@ -1,0 +1,15 @@
+{
+  "app_name": "PallasAI Coding Agent",
+  "app_slug": "pallasai-coding-agent",
+  "app_id": "4160442",
+  "installation_id": "142953590",
+  "owner": "pallas-ai-geo",
+  "repository_selection": "all",
+  "permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "metadata": "read"
+  },
+  "private_key_path_env": "GITHUB_APP_PRIVATE_KEY_PATH",
+  "private_key_env": "GITHUB_APP_PRIVATE_KEY"
+}
