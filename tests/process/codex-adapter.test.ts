@@ -249,6 +249,34 @@ describe('CodexAdapter process contract', () => {
     expect(record.env.CODEX_HOME).toBe(join(fake.dir, 'codex-home'));
   });
 
+  it('injects only the current message JWT when resuming the same Codex thread', async () => {
+    const fake = await createFakeCodex({ lines: [{ type: 'turn.completed' }] });
+    cleanup.push(fake.dir);
+    const adapter = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir });
+    const previousJwt = process.env.PALLAS_ADMIN_JWT;
+    const previousSecret = process.env.BRIDGE_ADMIN_SECRET;
+    process.env.PALLAS_ADMIN_JWT = 'stale-parent-jwt';
+    process.env.BRIDGE_ADMIN_SECRET = 'parent-only-secret';
+    try {
+      for (const jwt of ['alice-message-jwt', 'bob-message-jwt']) {
+        const run = adapter.run({ runId: jwt, prompt: 'continue', threadId: 'same-thread',
+          cwd: await realpath(fake.dir), env: { PALLAS_ADMIN_JWT: jwt } });
+        await collect(run.events); await run.waitForExit(1000);
+        const record = await readRecord(fake.recordPath);
+        expect(record.env.PALLAS_ADMIN_JWT).toBe(jwt);
+        expect(record.env.BRIDGE_ADMIN_SECRET).toBeUndefined();
+        expect(record.stdin).not.toContain(jwt);
+        expect(record.argv).not.toContain(jwt);
+      }
+      const run = adapter.run({ runId: 'anonymous', prompt: 'continue', threadId: 'same-thread', cwd: await realpath(fake.dir) });
+      await collect(run.events); await run.waitForExit(1000);
+      expect((await readRecord(fake.recordPath)).env.PALLAS_ADMIN_JWT).toBeUndefined();
+    } finally {
+      if (previousJwt === undefined) delete process.env.PALLAS_ADMIN_JWT; else process.env.PALLAS_ADMIN_JWT = previousJwt;
+      if (previousSecret === undefined) delete process.env.BRIDGE_ADMIN_SECRET; else process.env.BRIDGE_ADMIN_SECRET = previousSecret;
+    }
+  });
+
   it('passes configured Codex ignore flags through the argv builder', async () => {
     const fake = await createFakeCodex({
       lines: [{ type: 'turn.completed' }],
@@ -454,6 +482,8 @@ async function createFakeCodex(options: {
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
       '      CODEX_HOME: process.env.CODEX_HOME,',
       '      APP_SECRET: process.env.APP_SECRET,',
+      '      PALLAS_ADMIN_JWT: process.env.PALLAS_ADMIN_JWT,',
+      '      BRIDGE_ADMIN_SECRET: process.env.BRIDGE_ADMIN_SECRET,',
       '      PATH: process.env.PATH,',
       '    },',
       '  }));',
@@ -481,6 +511,8 @@ async function readRecord(path: string): Promise<{
     LARKSUITE_CLI_CONFIG_DIR?: string;
     CODEX_HOME?: string;
     APP_SECRET?: string;
+    PALLAS_ADMIN_JWT?: string;
+    BRIDGE_ADMIN_SECRET?: string;
     PATH?: string;
   };
 }> {
@@ -496,6 +528,8 @@ async function readRecord(path: string): Promise<{
       LARKSUITE_CLI_CONFIG_DIR?: string;
       CODEX_HOME?: string;
       APP_SECRET?: string;
+      PALLAS_ADMIN_JWT?: string;
+      BRIDGE_ADMIN_SECRET?: string;
       PATH?: string;
     };
   };

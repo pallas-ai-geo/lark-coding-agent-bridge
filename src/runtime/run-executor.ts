@@ -5,6 +5,7 @@ import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
+import type { RunCredentials, RunCredentialFactory } from './run-credentials';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -16,6 +17,7 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  authorize?: RunCredentialFactory;
   scopeId: string;
   policy: RunPolicyAllow;
   sessionId?: string;
@@ -106,15 +108,28 @@ export class RunExecutor {
       stopGraceMs: input.stopGraceMs,
     };
     let run: AgentRun;
+    let credentials: RunCredentials | undefined;
+    let revokePromise: Promise<void> | undefined;
+    const revokeCredentials = (): Promise<void> => {
+      revokePromise ??= (async () => { await credentials?.dispose(); })();
+      return revokePromise;
+    };
     try {
       await this.agent.prepareRun?.(runOptions);
+      if (input.authorize) {
+        try { credentials = await input.authorize(runId); }
+        catch { throw new RunRejected('message-authorization-denied', '本条消息的飞书身份或 Admin 权限校验失败'); }
+      }
     } catch (err) {
       release();
       releaseScope();
+      await revokeCredentials();
+      if (err instanceof RunRejected) throw err;
       if (err instanceof SpawnFailed) throw err;
       throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
     }
     if (this.activeRuns.newRunsPaused()) {
+      await revokeCredentials();
       release();
       releaseScope();
       throw new RunRejected(
@@ -122,11 +137,23 @@ export class RunExecutor {
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
       );
     }
+    if (input.policy.expiresAt <= this.now()) {
+      await revokeCredentials(); release(); releaseScope();
+      throw new RunRejected('policy-expired', 'run policy expired during message authorization');
+    }
     try {
-      run = this.agent.run(runOptions);
+      const rawRun = this.agent.run({ ...runOptions, ...(credentials ? { env: { ...credentials.env }, removeEnvKeys: credentials.removeEnvKeys } : {}) });
+      // All stop paths (including cards/reconnect calling handle.run.stop directly) revoke first.
+      run = credentials ? {
+        runId: rawRun.runId,
+        events: rawRun.events,
+        stop: async () => { await revokeCredentials(); await rawRun.stop(); },
+        waitForExit: timeoutMs => rawRun.waitForExit(timeoutMs),
+      } : rawRun;
     } catch (err) {
       release();
       releaseScope();
+      await revokeCredentials();
       throw new SpawnFailed('agent spawn failed', err);
     }
     const dimensions = {
@@ -146,12 +173,17 @@ export class RunExecutor {
     });
 
     let handle: RunHandle;
+    const removeLostListener = credentials?.onLost(() => {
+      void revokeCredentials().finally(() => run.stop()).catch(() => {});
+    });
     try {
       handle = this.activeRuns.register(input.scopeId, run);
     } catch (err) {
       releaseScope();
       release();
       await run.stop().catch(() => {});
+      removeLostListener?.();
+      await revokeCredentials();
       throw new RunRejected(
         'run-already-active',
         err instanceof Error ? err.message : 'another run is already active for this scope',
@@ -161,6 +193,8 @@ export class RunExecutor {
     const cleanup = async (waitForExit: boolean): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
+      removeLostListener?.();
+      await revokeCredentials();
       this.activeRuns.unregister(input.scopeId, run);
       release();
       if (waitForExit) {
@@ -186,6 +220,8 @@ export class RunExecutor {
     }), async () => {
       await cleanup(!handle.interrupted);
     });
+    // Credential lifetime must not depend on a renderer subscribing successfully.
+    if (credentials) fanout.start();
 
     return {
       runId,
@@ -195,6 +231,7 @@ export class RunExecutor {
       subscribe: () => fanout.subscribe(),
       stop: async () => {
         handle.interrupted = true;
+        await revokeCredentials();
         await run.stop();
         await run.waitForExit(this.postDoneExitGraceMs);
         await cleanup(false);
@@ -283,7 +320,7 @@ class EventFanout {
     };
   }
 
-  private start(): void {
+  start(): void {
     if (this.started) return;
     this.started = true;
     void this.pump();
@@ -292,6 +329,7 @@ class EventFanout {
   private async pump(): Promise<void> {
     try {
       for await (const event of this.source) {
+        if (isTerminalEvent(event)) await this.onDone();
         this.buffer.push(event);
         this.wakeAll();
         if (isTerminalEvent(event)) break;

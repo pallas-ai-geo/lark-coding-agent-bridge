@@ -16,12 +16,14 @@ import {
   type WorkingDirectoryResolveResult,
 } from '../policy/workspace';
 import type { RunExecution, RunExecutor } from '../runtime/run-executor';
+import type { RunCredentialFactory } from '../runtime/run-credentials';
 import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 
 export interface StartRunFlowInput {
+  authorize?: RunCredentialFactory;
   scopeId: string;
   scope: ScopeContext;
   prompt: string;
@@ -140,6 +142,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   let execution: RunExecution;
   try {
     execution = await input.executor.submit({
+      authorize: input.authorize,
       scopeId: input.scopeId,
       policy,
       sessionId,
@@ -165,7 +168,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         rejectReason: {
           code: err.code,
           userVisible:
-            err.code === 'reconnect-in-progress'
+            err.code === 'message-authorization-denied'
+              ? '本条消息的飞书身份或 Admin 权限校验失败，未启动运行。'
+              : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'
               : err.code === 'run-already-active'
                 ? '当前会话已有运行在执行，请稍后再试或先停止当前运行。'

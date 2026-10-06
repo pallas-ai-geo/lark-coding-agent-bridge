@@ -1,6 +1,7 @@
 import type { AgentPreflightDiagnostic, AgentPreflightErrorCode } from '../agent/preflight';
 
 export type RunRejectedCode =
+  | 'message-authorization-denied'
   | 'pool-full'
   | 'policy-expired'
   | 'reconnect-in-progress'

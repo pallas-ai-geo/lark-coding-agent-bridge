@@ -172,7 +172,7 @@ describe('sender identity in bridge_context', () => {
     expect(userInput.text).toContain('没有正文');
   });
 
-  it('annotates each message with its sender when a batch merges multiple senders', async () => {
+  it('runs different senders separately instead of merging another sender into the first identity', async () => {
     const h = await createHarness();
     await startTestBridge(h);
 
@@ -194,15 +194,14 @@ describe('sender identity in bridge_context', () => {
         rawSenderType: 'app',
       }),
     );
-    await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.agent.runOptions.length === 2);
 
-    const userInput = readSection(h.agent.runOptions[0]?.prompt ?? '', 'user_input') as {
-      text: string;
-    };
-    expect(userInput.text).toContain('[张三 (user)]:');
-    expect(userInput.text).toContain('[HermesBot (bot)]:');
-    expect(userInput.text).toContain('这个报错怎么回事');
-    expect(userInput.text).toContain('我刚发布了 v1.2.3');
+    const first = readSection(h.agent.runOptions[0]?.prompt ?? '', 'user_input') as { text: string };
+    const second = readSection(h.agent.runOptions[1]?.prompt ?? '', 'user_input') as { text: string };
+    expect(first.text).toContain('这个报错怎么回事');
+    expect(first.text).not.toContain('我刚发布了 v1.2.3');
+    expect(second.text).toContain('我刚发布了 v1.2.3');
+    expect(second.text).not.toContain('这个报错怎么回事');
   });
 
   it('keeps single-message batches free of sender annotations', async () => {

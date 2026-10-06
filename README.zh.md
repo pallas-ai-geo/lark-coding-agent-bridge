@@ -355,3 +355,6 @@ export default createAdapter;
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">
+## 消息级 Admin 授权
+
+可选的 `adminAuthorization` profile 配置支持独立核验飞书消息、按邮箱检查 Pallas Admin 权限，并为本轮 agent 注入独立凭证。配置、调用与隔离边界见 [说明](docs/admin-message-authorization.md)。需要先配置远端签发服务和专用 Cloudflare Service Auth；默认不启用。

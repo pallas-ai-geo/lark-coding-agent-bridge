@@ -30,6 +30,7 @@
     "bin",
     "README.md",
     "README.zh.md",
+    "docs/admin-message-authorization.md",
     "LICENSE"
   ],
   "scripts": {

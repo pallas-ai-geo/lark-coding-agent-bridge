@@ -3,6 +3,7 @@ import type {
   AppPreferences,
   MessageReplyMode,
   SecretsConfig,
+  SecretInput,
 } from './schema';
 import {
   normalizePermissions,
@@ -89,6 +90,8 @@ export interface LarkCliConfig {
 }
 
 export interface ProfileConfig {
+  /** Opt-in, independently verified message authorization. Never a chat-level credential. */
+  adminAuthorization?: AdminAuthorizationConfig;
   schemaVersion: 2;
   agentKind: AgentKind;
   /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
@@ -120,9 +123,9 @@ export interface ProfileConfig {
  * applies the lark-cli identity policy should read through here.
  */
 export function effectiveLarkCliIdentity(
-  profile: Pick<ProfileConfig, 'mode' | 'larkCli'>,
+  profile: Pick<ProfileConfig, 'mode' | 'larkCli' | 'adminAuthorization'>,
 ): LarkCliIdentityPreset {
-  return profile.mode === 'team' ? 'bot-only' : profile.larkCli.identityPreset;
+  return profile.mode === 'team' || profile.adminAuthorization ? 'bot-only' : profile.larkCli.identityPreset;
 }
 
 export interface RootConfig {
@@ -186,6 +189,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
     larkCli?: unknown;
+    adminAuthorization?: AdminAuthorizationConfig;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -236,7 +240,37 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     },
     comments,
     larkCli,
+    ...(raw.adminAuthorization ? { adminAuthorization: normalizeAdminAuthorization(raw.adminAuthorization) } : {}),
   };
+}
+
+export interface AdminAuthorizationConfig {
+  issuerUrl: string;
+  adminUrl: string;
+  bridgeSecret: SecretInput;
+  cfAccessClientId: string;
+  cfAccessClientSecret: SecretInput;
+  region: 'domestic' | 'overseas';
+  environment: 'test' | 'production';
+}
+
+function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAuthorizationConfig {
+  for (const input of [config.bridgeSecret, config.cfAccessClientSecret]) {
+    const name = typeof input === 'string' ? /^\$\{([^}]+)\}$/.exec(input)?.[1]
+      : input?.source === 'env' ? input.id : undefined;
+    if (name && !name.startsWith('BRIDGE_ADMIN_')) throw new Error('Admin secret environment names must start with BRIDGE_ADMIN_');
+  }
+  for (const value of [config.issuerUrl, config.adminUrl]) {
+    const url = new URL(value);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
+      throw new Error('adminAuthorization URLs must be HTTPS origins');
+    }
+  }
+  if (!config.bridgeSecret || !config.cfAccessClientSecret || !config.cfAccessClientId
+      || !['domestic:test', 'domestic:production', 'overseas:production'].includes(`${config.region}:${config.environment}`)) {
+    throw new Error('adminAuthorization is incomplete');
+  }
+  return { ...config, issuerUrl: config.issuerUrl.replace(/\/$/, ''), adminUrl: config.adminUrl.replace(/\/$/, '') };
 }
 
 function normalizeAccounts(input: unknown): ProfileConfig['accounts'] {

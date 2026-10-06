@@ -29,6 +29,9 @@ export type AgentEvent =
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
 export interface AgentRunOptions {
+  /** Snapshot for this process only; never mutate process.env or save in session history. */
+  env?: Readonly<Record<string, string>>;
+  removeEnvKeys?: readonly string[];
   runId: string;
   prompt: string;
   cwd?: string;

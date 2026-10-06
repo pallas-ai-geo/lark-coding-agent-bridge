@@ -51,6 +51,7 @@ import { canUseDm, canUseGroup } from '../policy/access';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
+import { authorizeAdminMessage } from '../runtime/admin-authorization';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -328,7 +329,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         log.info('flush', 'end');
       }
     });
-  });
+  }, () => controls.profileConfig.adminAuthorization ? 1 : Infinity);
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
@@ -730,6 +731,10 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return;
+  if (batch.some(message => message.senderId !== firstMsg.senderId)
+      || (controls.profileConfig.adminAuthorization && batch.length !== 1)) {
+    throw new Error('A privileged run must belong to exactly one message and sender');
+  }
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
@@ -881,7 +886,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     controls.profileConfig.agentKind === 'codex'
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
+  const authorizationProfile = controls.profileConfig;
   const flow = await startRunFlow({
+    ...(authorizationProfile.adminAuthorization ? {
+      authorize: (runId: string) => authorizeAdminMessage(authorizationProfile, {
+        messageId: firstMsg.messageId, chatId: firstMsg.chatId, senderId: firstMsg.senderId,
+      }, runId),
+    } : {}),
     scopeId: scope,
     scope: scopeContext,
     prompt,

@@ -26,10 +26,12 @@ export class PendingQueue {
   private readonly blocked = new Set<string>();
   private readonly delayMs: number;
   private readonly onFlush: FlushHandler;
+  private readonly maxBatchSize: () => number;
 
-  constructor(delayMs: number, onFlush: FlushHandler) {
+  constructor(delayMs: number, onFlush: FlushHandler, maxBatchSize: () => number = () => Infinity) {
     this.delayMs = delayMs;
     this.onFlush = onFlush;
+    this.maxBatchSize = maxBatchSize;
   }
 
   push(scope: string, msg: NormalizedMessage): number {
@@ -93,11 +95,20 @@ export class PendingQueue {
   private flush(scope: string): void {
     const entry = this.map.get(scope);
     if (!entry) return;
-    this.map.delete(scope);
+    const first = entry.messages[0];
+    let count = 0;
+    const limit = Math.max(1, this.maxBatchSize());
+    while (count < entry.messages.length && count < limit && entry.messages[count]?.senderId === first?.senderId) count++;
+    const batch = entry.messages.slice(0, count);
+    const remaining = entry.messages.slice(count);
+    if (remaining.length) this.map.set(scope, { messages: remaining });
+    else this.map.delete(scope);
     try {
-      this.onFlush(scope, entry.messages);
+      this.onFlush(scope, batch);
     } catch (err) {
       log.fail('queue', err, { scope, batchSize: entry.messages.length });
     }
+    const next = this.map.get(scope);
+    if (next && !this.blocked.has(scope) && !next.timer) next.timer = this.armTimer(scope);
   }
 }
