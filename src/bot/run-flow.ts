@@ -169,7 +169,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
           code: err.code,
           userVisible:
             err.code === 'message-authorization-denied'
-              ? '本条消息的飞书身份或 Admin 权限校验失败，未启动运行。'
+              ? `${err.message}，未启动运行。`
               : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'
               : err.code === 'run-already-active'

@@ -8,6 +8,7 @@ import { resolveSecretInput } from '../config/secret-resolver';
 import { paths } from '../config/paths';
 import type { KeystorePaths } from '../config/keystore';
 import type { RunCredentials } from './run-credentials';
+import { RunRejected } from './errors';
 
 export interface AdminMessageIdentity {
   messageId: string;
@@ -27,6 +28,12 @@ interface Grant {
   chat_id: string;
   run_id: string;
 }
+
+const issuerFailureCodes = new Set([
+  'issuer-not-configured', 'invalid-message-request', 'feishu-api-denied', 'message-unavailable',
+  'message-ineligible', 'message-deleted', 'message-too-old', 'message-identity-mismatch', 'unsupported-chat-type', 'missing-bot-mention',
+  'inactive-feishu-user', 'company-email-unavailable', 'message-authorization-denied',
+]);
 
 function secretEnvironmentNames(input: SecretInput): string[] {
   if (typeof input === 'string') return /^\$\{([A-Z][A-Z0-9_]*)\}$/.exec(input)?.slice(1) ?? [];
@@ -53,7 +60,14 @@ export async function authorizeAdminMessage(
     body: JSON.stringify({ message_id: identity.messageId, chat_id: identity.chatId,
       actor_open_id: identity.senderId, run_id: runId, app_id: profile.accounts.app.id }),
   });
-  if (!result.ok) throw new Error('Independent Feishu message verification denied');
+  if (!result.ok) {
+    let reason = `issuer-http-${result.status}`;
+    try {
+      const detail = await result.json() as { error_code?: unknown };
+      if (typeof detail.error_code === 'string' && issuerFailureCodes.has(detail.error_code)) reason = detail.error_code;
+    } catch { /* Non-JSON edge failures still have a safe HTTP status. */ }
+    throw new RunRejected('message-authorization-denied', `飞书消息身份校验或 JWT 签发失败（${reason}）`);
+  }
   const grant = await result.json() as Grant;
   if (typeof grant.jwt !== 'string' || typeof grant.manager_token !== 'string' || !/^[a-f0-9]{64}$/.test(grant.jti)
       || grant.message_id !== identity.messageId || grant.actor_open_id !== identity.senderId

@@ -30,3 +30,5 @@ The parent renews a 60-second lease every 20 seconds. Completion/cancellation cl
 Signing keys and Feishu app credentials remain in the issuer Worker. Cloudflare Access Service Auth for other Admin clients remains available alongside the fixed Bridge-IP rule. Card-click identity needs independent callback verification; this endpoint verifies the sender of a real IM message. Same-user unrestricted processes are not OS-isolated by environment injection.
 
 Deployment is complete only after the Worker protocol and running profile are configured and automatic injection is verified. Publishing code alone does not enable an unconfigured profile.
+
+2026-10-07 real-message correction: Feishu returned a bot mention as app_id and marked the message updated. The issuer accepts this application-typed mention and verifies the fetched sender of edited messages; edits do not change the identity JWT subject. Deleted/stale messages and other-app mentions remain denied. Bridge reports allowlisted issuance reasons instead of attributing signing failures to Admin membership.

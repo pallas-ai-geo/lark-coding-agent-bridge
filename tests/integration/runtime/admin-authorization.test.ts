@@ -74,6 +74,17 @@ describe('Per-message Admin proxy', () => {
     expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/me`, { headers: headers(h.jwt) })).status).toBe(403);
     expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`, { headers: headers(h.jwt) })).status).toBe(403);
   });
+  it('surfaces only allowlisted issuer reasons and never includes arbitrary error bodies', async () => {
+    const h=harness();
+    vi.stubGlobal('fetch',async()=>Response.json({error_code:'missing-bot-mention'}, {status:403}));
+    await expect(authorizeAdminMessage(h.profile,identity,'run-1')).rejects.toMatchObject({
+      code:'message-authorization-denied',message:'飞书消息身份校验或 JWT 签发失败（missing-bot-mention）',
+    });
+    vi.stubGlobal('fetch',async()=>Response.json({error_code:'arbitrary-secret-value',details:'private upstream response'}, {status:403}));
+    await expect(authorizeAdminMessage(h.profile,identity,'run-1')).rejects.toMatchObject({
+      code:'message-authorization-denied',message:'飞书消息身份校验或 JWT 签发失败（issuer-http-403）',
+    });
+  });
   it('keeps consecutive users and their proxy tokens separate in the same chat', async () => {
     const h = harness(); const alice = await authorizeAdminMessage(h.profile, identity, 'run-1'); cleanups.push(alice);
     const bob = await authorizeAdminMessage(h.profile, { ...identity, messageId: 'om_bob', senderId: 'ou_bob' }, 'run-2'); cleanups.push(bob);

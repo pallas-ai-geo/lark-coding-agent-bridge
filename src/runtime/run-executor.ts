@@ -118,7 +118,14 @@ export class RunExecutor {
       await this.agent.prepareRun?.(runOptions);
       if (input.authorize) {
         try { credentials = await input.authorize(runId); }
-        catch { throw new RunRejected('message-authorization-denied', '本条消息的飞书身份或 Admin 权限校验失败'); }
+        catch (error) {
+          if (error instanceof RunRejected && error.code === 'message-authorization-denied') {
+            log.warn('authorization', 'denied', { reason: error.message });
+            throw error;
+          }
+          log.warn('authorization', 'denied', { reason: 'identity-issuance-failed' });
+          throw new RunRejected('message-authorization-denied', '飞书消息身份校验或 JWT 签发失败');
+        }
       }
     } catch (err) {
       release();
