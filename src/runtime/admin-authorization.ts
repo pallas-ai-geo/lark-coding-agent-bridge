@@ -86,7 +86,7 @@ export async function authorizeAdminMessage(
 
   // Fail before agent spawn if the independently verified mailbox has no active Admin access.
   try {
-    const access = await fetch(`${config.adminUrl}/api/bridge/me`, {
+    const access = await fetch(`${config.adminUrl}/api/developer/me`, {
       headers: upstreamHeaders(), redirect: 'error', signal: AbortSignal.timeout(10_000),
     });
     if (!access.ok) throw new Error('Admin access denied for this message');
@@ -126,7 +126,7 @@ export async function authorizeAdminMessage(
       }
       if (!active) { response.writeHead(403).end(); return; }
       const apiPath = url.pathname.slice(`${prefix}/api/admin/`.length);
-      const target = new URL(`/api/bridge/admin/${apiPath}`, config!.adminUrl);
+      const target = new URL(`/api/developer/admin/${apiPath}`, config!.adminUrl);
       target.search = url.search;
       const headers: Record<string, string> = {};
       for (const name of ['content-type', 'accept', 'idempotency-key']) {

@@ -20,6 +20,8 @@ Keep secret values out of profile JSON. Existing file/exec secret references als
 
 The issuer uses its own Feishu credentials to verify message sender, tenant, recent timestamp, active employment, mailbox and bot mention. The caller-supplied sender is only a consistency check. The mailbox is checked against Admin's existing roles/environment before agent spawn. Missing permission or verification failure rejects the run, without a privileged fallback.
 
+The public Admin entry points are `/api/developer/me` for the permission preflight and `/api/developer/admin/*` for the existing `/api/admin/*` APIs. Protect `admin.pallasai.net/api/developer/*` with the dedicated Cloudflare Access Service Auth application. Issuer endpoints remain `/bridge/authorize`, `/bridge/jwks`, `/bridge/introspect` and `/bridge/leases/*`.
+
 Each authorized message starts one run. Different senders are never combined into a batch. The same Codex conversation can be resumed, but a new run receives a new environment snapshot and credential. Authorized profiles force lark-cli bot-only identity to avoid inheriting the owner's personal user token.
 
 The agent receives `PALLAS_ADMIN_JWT`, `PALLAS_ADMIN_API_BASE_URL`, `PALLAS_ADMIN_REGION` and `PALLAS_ADMIN_ENVIRONMENT`. The API base is a random, loopback-only proxy for that run. Cloudflare service credentials and lease-management credentials remain in the bridge parent, not in the agent environment.

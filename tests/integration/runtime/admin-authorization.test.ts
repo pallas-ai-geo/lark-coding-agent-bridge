@@ -21,9 +21,9 @@ function harness(accessAllowed = true) {
     if (url.endsWith('/bridge/authorize')) return Response.json({ jwt, jti: 'a'.repeat(64), manager_token: 'parent-only-manager',
       app_id: 'cli_test', actor_open_id: 'ou_alice', message_id: 'om_message', chat_id: 'oc_chat', run_id: 'run-1',
       region: 'domestic', environment: 'test', expires_at: Math.floor(Date.now() / 1000) + 3600, lease_seconds: 60 });
-    if (url.endsWith('/api/bridge/me')) return Response.json({ email: 'alice@pallasai.net' }, { status: accessAllowed ? 200 : 403 });
+    if (url.endsWith('/api/developer/me')) return Response.json({ email: 'alice@pallasai.net' }, { status: accessAllowed ? 200 : 403 });
     if (url.endsWith('/revoke')) return Response.json({ active: false });
-    if (url.includes('/api/bridge/admin/')) return Response.json({ ok: true });
+    if (url.includes('/api/developer/admin/')) return Response.json({ ok: true });
     throw new Error('Unexpected network request');
   }));
   return { profile, requests, jwt };
@@ -41,7 +41,7 @@ describe('Per-message Admin proxy', () => {
     expect((await realFetch(url, { headers: { authorization: 'Bearer other-run-token' } })).status).toBe(403);
     const result = await realFetch(url, { headers: { authorization: `Bearer ${h.jwt}`, 'X-Pallas-Environment': 'production', 'X-Pallas-User-Email': 'admin@pallasai.net' } });
     expect(result.status).toBe(200);
-    const upstream = h.requests.find(request => request.url.endsWith('/api/bridge/admin/groups'))!;
+    const upstream = h.requests.find(request => request.url.endsWith('/api/developer/admin/groups'))!;
     expect(upstream.headers.get('CF-Access-Client-Secret')).toBe('cf-service-secret');
     expect(upstream.headers.get('X-Pallas-Environment')).toBe('test');
     expect(upstream.headers.get('X-Pallas-User-Email')).toBeNull();
@@ -53,6 +53,6 @@ describe('Per-message Admin proxy', () => {
     const h = harness(false);
     await expect(authorizeAdminMessage(h.profile, { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message' }, 'run-1')).rejects.toThrow('Admin access denied');
     expect(h.requests.filter(request => request.url.endsWith('/revoke'))).toHaveLength(1);
-    expect(h.requests.some(request => request.url.includes('/api/bridge/admin/'))).toBe(false);
+    expect(h.requests.some(request => request.url.includes('/api/developer/admin/'))).toBe(false);
   });
 });
