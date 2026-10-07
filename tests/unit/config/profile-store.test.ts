@@ -27,6 +27,28 @@ async function tmpRoot(): Promise<string> {
 }
 
 describe('profile store canonical serialization', () => {
+  it('preserves message authorization across saves and reloads', async () => {
+    const root = await tmpRoot();
+    const configPath = join(root, 'config.json');
+    const profile = createDefaultProfileConfig({
+      agentKind: 'codex', accounts: { app },
+      codex: { binaryPath: '/usr/local/bin/codex' },
+    });
+    profile.adminAuthorization = {
+      issuerUrl: 'https://feishu.pallasai.net', adminUrl: 'https://admin.pallasai.net',
+      bridgeSecret: { source: 'env', id: 'BRIDGE_ADMIN_ISSUER_SECRET' },
+      cfAccessClientId: 'bridge.access',
+      cfAccessClientSecret: { source: 'env', id: 'BRIDGE_ADMIN_CF_SECRET' },
+      region: 'domestic', environment: 'test',
+    };
+    await saveRootConfig(createRootConfig('codex', profile), configPath);
+    const loaded = await loadRootConfig(configPath);
+    expect(loaded?.profiles.codex?.adminAuthorization).toEqual(profile.adminAuthorization);
+    await saveRootConfig(loaded!, configPath);
+    expect((await loadRootConfig(configPath))?.profiles.codex?.adminAuthorization)
+      .toEqual(profile.adminAuthorization);
+  });
+
   it('saves stored root and profile config without unknown root fields or runtime-only profile fields', async () => {
     const root = await tmpRoot();
     const configPath = join(root, 'config.json');
