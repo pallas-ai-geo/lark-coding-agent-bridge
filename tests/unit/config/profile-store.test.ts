@@ -36,10 +36,9 @@ describe('profile store canonical serialization', () => {
     });
     profile.adminAuthorization = {
       issuerUrl: 'https://feishu.pallasai.net', adminUrl: 'https://admin.pallasai.net',
-      issuerJwt: { source: 'env', id: 'PALLAS_ADMIN_JWT' },
+      machineAuth: 'service-token',
       cfAccessClientId: 'bridge.access',
       cfAccessClientSecret: { source: 'env', id: 'PALLAS_ADMIN_CF_SECRET' },
-      region: 'domestic', environment: 'test',
     };
     await saveRootConfig(createRootConfig('codex', profile), configPath);
     const loaded = await loadRootConfig(configPath);

@@ -26,8 +26,6 @@ interface Grant {
   message_id: string;
   chat_id: string;
   run_id: string;
-  region: string;
-  environment: string;
 }
 
 function secretEnvironmentNames(input: SecretInput): string[] {
@@ -47,24 +45,19 @@ export async function authorizeAdminMessage(
 ): Promise<RunCredentials> {
   const config = profile.adminAuthorization;
   if (!config) throw new Error('Admin authorization is not configured');
-  const [issuerJwt, cfSecret] = await Promise.all([
-    resolveSecretInput(config.issuerJwt, profile.secrets, profile.accounts.app.id, secretPaths),
-    config.machineAuth === 'ip' ? Promise.resolve(undefined)
-      : resolveSecretInput(config.cfAccessClientSecret, profile.secrets, profile.accounts.app.id, secretPaths),
-  ]);
+  const cfSecret = config.machineAuth === 'service-token'
+    ? await resolveSecretInput(config.cfAccessClientSecret, profile.secrets, profile.accounts.app.id, secretPaths) : undefined;
   const result = await fetch(`${config.issuerUrl}/bridge/authorize`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
-    headers: { authorization: `Bearer ${issuerJwt}`, 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ message_id: identity.messageId, chat_id: identity.chatId,
-      actor_open_id: identity.senderId, run_id: runId, app_id: profile.accounts.app.id,
-      region: config.region, environment: config.environment }),
+      actor_open_id: identity.senderId, run_id: runId, app_id: profile.accounts.app.id }),
   });
   if (!result.ok) throw new Error('Independent Feishu message verification denied');
   const grant = await result.json() as Grant;
   if (typeof grant.jwt !== 'string' || typeof grant.manager_token !== 'string' || !/^[a-f0-9]{64}$/.test(grant.jti)
       || grant.message_id !== identity.messageId || grant.actor_open_id !== identity.senderId
       || grant.chat_id !== identity.chatId || grant.run_id !== runId || grant.app_id !== profile.accounts.app.id
-      || grant.region !== config.region || grant.environment !== config.environment
       || !Number.isFinite(grant.expires_at) || grant.expires_at * 1000 <= Date.now()
       || grant.expires_at * 1000 > Date.now() + 3600_000
       || grant.lease_seconds !== 60) throw new Error('Authorization response does not match this message');
@@ -76,28 +69,18 @@ export async function authorizeAdminMessage(
     });
     if (!response.ok) throw new Error('Message authorization lease unavailable');
   };
-  const upstreamHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
+  const upstreamHeaders = (extra: Record<string, string>, region: string, environment: string): Record<string, string> => ({
     ...extra,
     authorization: `Bearer ${grant.jwt}`,
-    ...(config.machineAuth === 'ip' ? {} : {
+    ...(config.machineAuth !== 'service-token' ? {} : {
       'CF-Access-Client-Id': config.cfAccessClientId,
       'CF-Access-Client-Secret': cfSecret!,
     }),
-    'X-Pallas-Region': config.region,
-    'X-Pallas-Environment': config.environment,
+    'X-Pallas-Region': region,
+    'X-Pallas-Environment': environment,
   });
 
-  // Fail before agent spawn if the independently verified mailbox has no active Admin access.
-  try {
-    const access = await fetch(`${config.adminUrl}/api/developer/me`, {
-      headers: upstreamHeaders(), redirect: 'error', signal: AbortSignal.timeout(10_000),
-    });
-    if (!access.ok) throw new Error('Admin access denied for this message');
-  } catch {
-    await management('revoke').catch(() => {});
-    throw new Error('Admin access denied for this message');
-  }
-
+  // A verified identity is injected regardless of Admin membership; Admin enforces RBAC per request.
   const prefix = '';
   let active = true;
   let disposed: Promise<void> | undefined;
@@ -111,13 +94,19 @@ export async function authorizeAdminMessage(
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       if (!active || Date.now() >= grant.expires_at * 1000 || request.headers.origin
-          || !url.pathname.startsWith(`${prefix}/api/developer/admin/`)
+          || !(url.pathname === "/api/developer/me" || url.pathname.startsWith(`${prefix}/api/developer/admin/`))
           || !same(request.headers.authorization ?? '', `Bearer ${grant.jwt}`)) {
         response.writeHead(403).end('Message authorization denied'); return;
       }
       const method = request.method ?? 'GET';
       if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
         response.writeHead(405).end(); return;
+      }
+      const region = request.headers['x-pallas-region'];
+      const environment = request.headers['x-pallas-environment'];
+      if (typeof region !== 'string' || typeof environment !== 'string'
+          || !['domestic:test', 'domestic:production', 'overseas:production'].includes(`${region}:${environment}`)) {
+        response.writeHead(400).end('Explicit supported region and environment are required'); return;
       }
       const body: Buffer[] = [];
       let size = 0;
@@ -129,7 +118,7 @@ export async function authorizeAdminMessage(
       }
       if (!active) { response.writeHead(403).end(); return; }
       const apiPath = url.pathname.slice(`${prefix}/api/developer/admin/`.length);
-      const target = new URL(`/api/developer/admin/${apiPath}`, config!.adminUrl);
+      const target = new URL(url.pathname === "/api/developer/me" ? "/api/developer/me" : `/api/developer/admin/${apiPath}`, config!.adminUrl);
       target.search = url.search;
       const headers: Record<string, string> = {};
       for (const name of ['content-type', 'accept', 'idempotency-key']) {
@@ -137,7 +126,7 @@ export async function authorizeAdminMessage(
         if (typeof value === 'string') headers[name] = value;
       }
       controller = new AbortController(); requests.add(controller);
-      const remote = await fetch(target, { method, headers: upstreamHeaders(headers), redirect: 'manual',
+      const remote = await fetch(target, { method, headers: upstreamHeaders(headers, region, environment), redirect: 'manual',
         signal: controller.signal, ...(!['GET', 'HEAD'].includes(method) ? { body: new Uint8Array(Buffer.concat(body)) } : {}) });
       const output: Record<string, string> = { 'cache-control': 'no-store' };
       for (const name of ['content-type', 'content-disposition']) {
@@ -192,10 +181,8 @@ export async function authorizeAdminMessage(
   const address = server.address();
   if (!address || typeof address === 'string') { await dispose(); throw new Error('Local Admin proxy unavailable'); }
   return {
-    env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}`,
-      PALLAS_ADMIN_REGION: config.region, PALLAS_ADMIN_ENVIRONMENT: config.environment },
-    removeEnvKeys: [...secretEnvironmentNames(config.issuerJwt),
-      ...(config.cfAccessClientSecret ? secretEnvironmentNames(config.cfAccessClientSecret) : [])],
+    env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}` },
+    removeEnvKeys: config.cfAccessClientSecret ? secretEnvironmentNames(config.cfAccessClientSecret) : [],
     dispose,
     onLost(listener) {
       listeners.add(listener);

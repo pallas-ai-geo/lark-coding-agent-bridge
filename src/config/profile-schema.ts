@@ -247,40 +247,34 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
 interface AdminAuthorizationBase {
   issuerUrl: string;
   adminUrl: string;
-  issuerJwt: SecretInput;
-  region: 'domestic' | 'overseas';
-  environment: 'test' | 'production';
 }
 
 export type AdminAuthorizationConfig = AdminAuthorizationBase & (
-  | { machineAuth: 'ip'; cfAccessClientId?: never; cfAccessClientSecret?: never }
+  | { machineAuth?: 'ip'; cfAccessClientId?: never; cfAccessClientSecret?: never }
   | { machineAuth?: 'service-token'; cfAccessClientId: string; cfAccessClientSecret: SecretInput }
 );
 
 function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAuthorizationConfig {
-  if (config.machineAuth !== undefined && !['service-token', 'ip'].includes(config.machineAuth)) {
-    throw new Error('Unsupported Admin machine authentication');
-  }
-  if (config.machineAuth === 'ip' ? Boolean(config.cfAccessClientId || config.cfAccessClientSecret)
+  const machineAuth = config.machineAuth ?? (config.cfAccessClientId || config.cfAccessClientSecret ? 'service-token' : 'ip');
+  if (!['service-token', 'ip'].includes(machineAuth)) throw new Error('Unsupported Admin machine authentication');
+  if (machineAuth === 'ip' ? Boolean(config.cfAccessClientId || config.cfAccessClientSecret)
       : !config.cfAccessClientId || !config.cfAccessClientSecret) {
     throw new Error('Admin machine authentication configuration is incomplete');
   }
-  for (const input of [config.issuerJwt, config.cfAccessClientSecret]) {
-    const name = typeof input === 'string' ? /^\$\{([^}]+)\}$/.exec(input)?.[1]
-      : input?.source === 'env' ? input.id : undefined;
-    if (name && !name.startsWith('BRIDGE_ADMIN_') && !['PALLAS_ADMIN_JWT', 'PALLAS_ADMIN_CF_SECRET'].includes(name)) throw new Error('Admin secret environment names must start with BRIDGE_ADMIN_');
-  }
+  const input = config.cfAccessClientSecret;
+  const name = typeof input === 'string' ? /^\$\{([^}]+)\}$/.exec(input)?.[1]
+    : input?.source === 'env' ? input.id : undefined;
+  if (name && !name.startsWith('BRIDGE_ADMIN_') && name !== 'PALLAS_ADMIN_CF_SECRET') throw new Error('Unsupported Admin secret environment name');
   for (const value of [config.issuerUrl, config.adminUrl]) {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') {
       throw new Error('adminAuthorization URLs must be HTTPS origins');
     }
   }
-  if (!config.issuerJwt
-      || !['domestic:test', 'domestic:production', 'overseas:production'].includes(`${config.region}:${config.environment}`)) {
-    throw new Error('adminAuthorization is incomplete');
-  }
-  return { ...config, issuerUrl: config.issuerUrl.replace(/\/$/, ''), adminUrl: config.adminUrl.replace(/\/$/, '') };
+  return { issuerUrl: config.issuerUrl.replace(/\/$/, ''), adminUrl: config.adminUrl.replace(/\/$/, ''),
+    ...(machineAuth === 'ip' ? { machineAuth: 'ip' as const } : { machineAuth: 'service-token' as const,
+      cfAccessClientId: config.cfAccessClientId!, cfAccessClientSecret: config.cfAccessClientSecret! }) };
+
 }
 
 function normalizeAccounts(input: unknown): ProfileConfig['accounts'] {
