@@ -1,4 +1,4 @@
-import { timingSafeEqual, randomUUID } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -47,14 +47,14 @@ export async function authorizeAdminMessage(
 ): Promise<RunCredentials> {
   const config = profile.adminAuthorization;
   if (!config) throw new Error('Admin authorization is not configured');
-  const [bridgeSecret, cfSecret] = await Promise.all([
-    resolveSecretInput(config.bridgeSecret, profile.secrets, profile.accounts.app.id, secretPaths),
+  const [issuerJwt, cfSecret] = await Promise.all([
+    resolveSecretInput(config.issuerJwt, profile.secrets, profile.accounts.app.id, secretPaths),
     config.machineAuth === 'ip' ? Promise.resolve(undefined)
       : resolveSecretInput(config.cfAccessClientSecret, profile.secrets, profile.accounts.app.id, secretPaths),
   ]);
   const result = await fetch(`${config.issuerUrl}/bridge/authorize`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
-    headers: { authorization: `Bearer ${bridgeSecret}`, 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${issuerJwt}`, 'content-type': 'application/json' },
     body: JSON.stringify({ message_id: identity.messageId, chat_id: identity.chatId,
       actor_open_id: identity.senderId, run_id: runId, app_id: profile.accounts.app.id,
       region: config.region, environment: config.environment }),
@@ -98,7 +98,7 @@ export async function authorizeAdminMessage(
     throw new Error('Admin access denied for this message');
   }
 
-  const prefix = `/${randomUUID()}`;
+  const prefix = '';
   let active = true;
   let disposed: Promise<void> | undefined;
   let lost = false;
@@ -111,7 +111,7 @@ export async function authorizeAdminMessage(
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       if (!active || Date.now() >= grant.expires_at * 1000 || request.headers.origin
-          || !url.pathname.startsWith(`${prefix}/api/admin/`)
+          || !url.pathname.startsWith(`${prefix}/api/developer/admin/`)
           || !same(request.headers.authorization ?? '', `Bearer ${grant.jwt}`)) {
         response.writeHead(403).end('Message authorization denied'); return;
       }
@@ -128,7 +128,7 @@ export async function authorizeAdminMessage(
         body.push(buffer);
       }
       if (!active) { response.writeHead(403).end(); return; }
-      const apiPath = url.pathname.slice(`${prefix}/api/admin/`.length);
+      const apiPath = url.pathname.slice(`${prefix}/api/developer/admin/`.length);
       const target = new URL(`/api/developer/admin/${apiPath}`, config!.adminUrl);
       target.search = url.search;
       const headers: Record<string, string> = {};
@@ -192,9 +192,9 @@ export async function authorizeAdminMessage(
   const address = server.address();
   if (!address || typeof address === 'string') { await dispose(); throw new Error('Local Admin proxy unavailable'); }
   return {
-    env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}${prefix}/api`,
+    env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}`,
       PALLAS_ADMIN_REGION: config.region, PALLAS_ADMIN_ENVIRONMENT: config.environment },
-    removeEnvKeys: [...secretEnvironmentNames(config.bridgeSecret),
+    removeEnvKeys: [...secretEnvironmentNames(config.issuerJwt),
       ...(config.cfAccessClientSecret ? secretEnvironmentNames(config.cfAccessClientSecret) : [])],
     dispose,
     onLost(listener) {

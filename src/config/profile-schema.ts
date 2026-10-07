@@ -247,7 +247,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
 interface AdminAuthorizationBase {
   issuerUrl: string;
   adminUrl: string;
-  bridgeSecret: SecretInput;
+  issuerJwt: SecretInput;
   region: 'domestic' | 'overseas';
   environment: 'test' | 'production';
 }
@@ -265,10 +265,10 @@ function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAut
       : !config.cfAccessClientId || !config.cfAccessClientSecret) {
     throw new Error('Admin machine authentication configuration is incomplete');
   }
-  for (const input of [config.bridgeSecret, config.cfAccessClientSecret]) {
+  for (const input of [config.issuerJwt, config.cfAccessClientSecret]) {
     const name = typeof input === 'string' ? /^\$\{([^}]+)\}$/.exec(input)?.[1]
       : input?.source === 'env' ? input.id : undefined;
-    if (name && !name.startsWith('BRIDGE_ADMIN_')) throw new Error('Admin secret environment names must start with BRIDGE_ADMIN_');
+    if (name && !name.startsWith('BRIDGE_ADMIN_') && !['PALLAS_ADMIN_JWT', 'PALLAS_ADMIN_CF_SECRET'].includes(name)) throw new Error('Admin secret environment names must start with BRIDGE_ADMIN_');
   }
   for (const value of [config.issuerUrl, config.adminUrl]) {
     const url = new URL(value);
@@ -276,7 +276,7 @@ function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAut
       throw new Error('adminAuthorization URLs must be HTTPS origins');
     }
   }
-  if (!config.bridgeSecret
+  if (!config.issuerJwt
       || !['domestic:test', 'domestic:production', 'overseas:production'].includes(`${config.region}:${config.environment}`)) {
     throw new Error('adminAuthorization is incomplete');
   }

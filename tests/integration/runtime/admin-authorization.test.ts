@@ -10,7 +10,7 @@ afterEach(async () => { await Promise.all(cleanups.splice(0).map(credential => c
 function harness(accessAllowed = true) {
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_test', secret: 'app-secret', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
   profile.adminAuthorization = { issuerUrl: 'https://issuer.example', adminUrl: 'https://admin.example',
-    bridgeSecret: 'issuer-service-secret', cfAccessClientId: 'cf-service-id', cfAccessClientSecret: 'cf-service-secret', region: 'domestic', environment: 'test' };
+    issuerJwt: 'issuer-service-secret', cfAccessClientId: 'cf-service-id', cfAccessClientSecret: 'cf-service-secret', region: 'domestic', environment: 'test' };
   const requests: Array<{ url: string; headers: Headers; body?: unknown }> = [];
   const jwt = 'test-message-jwt';
   vi.stubGlobal('fetch', vi.fn(async (target: string | URL | Request, init?: RequestInit) => {
@@ -33,10 +33,10 @@ describe('Per-message Admin proxy', () => {
   it('IP mode sends only the message JWT and does not resolve or send CF service credentials', async () => {
     const h = harness();
     h.profile.adminAuthorization = { issuerUrl: 'https://issuer.example', adminUrl: 'https://admin.example',
-      bridgeSecret: 'issuer-service-secret', machineAuth: 'ip', region: 'domestic', environment: 'test' };
+      issuerJwt: 'issuer-service-secret', machineAuth: 'ip', region: 'domestic', environment: 'test' };
     const credential = await authorizeAdminMessage(h.profile, { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message' }, 'run-1');
     cleanups.push(credential);
-    expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/admin/groups`, {
+    expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`, {
       headers: { authorization: `Bearer ${h.jwt}` },
     })).status).toBe(200);
     const calls = h.requests.filter(request => request.url.startsWith('https://admin.example/'));
@@ -54,7 +54,7 @@ describe('Per-message Admin proxy', () => {
     expect(JSON.stringify(credential.env)).not.toContain('cf-service-secret');
     expect(JSON.stringify(credential.env)).not.toContain('issuer-service-secret');
     expect(JSON.stringify(credential.env)).not.toContain('parent-only-manager');
-    const url = `${credential.env.PALLAS_ADMIN_API_BASE_URL}/admin/groups`;
+    const url = `${credential.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`;
     expect((await realFetch(url, { headers: { authorization: 'Bearer other-run-token' } })).status).toBe(403);
     const result = await realFetch(url, { headers: { authorization: `Bearer ${h.jwt}`, 'X-Pallas-Environment': 'production', 'X-Pallas-User-Email': 'admin@pallasai.net' } });
     expect(result.status).toBe(200);
