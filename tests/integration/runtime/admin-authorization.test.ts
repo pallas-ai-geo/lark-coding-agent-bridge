@@ -30,6 +30,23 @@ function harness(accessAllowed = true) {
 }
 
 describe('Per-message Admin proxy', () => {
+  it('IP mode sends only the message JWT and does not resolve or send CF service credentials', async () => {
+    const h = harness();
+    h.profile.adminAuthorization = { issuerUrl: 'https://issuer.example', adminUrl: 'https://admin.example',
+      bridgeSecret: 'issuer-service-secret', machineAuth: 'ip', region: 'domestic', environment: 'test' };
+    const credential = await authorizeAdminMessage(h.profile, { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message' }, 'run-1');
+    cleanups.push(credential);
+    expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/admin/groups`, {
+      headers: { authorization: `Bearer ${h.jwt}` },
+    })).status).toBe(200);
+    const calls = h.requests.filter(request => request.url.startsWith('https://admin.example/'));
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.headers.get('CF-Access-Client-Id')).toBeNull();
+      expect(call.headers.get('CF-Access-Client-Secret')).toBeNull();
+      expect(call.headers.get('Authorization')).toBe(`Bearer ${h.jwt}`);
+    }
+  });
   it('keeps long-lived secrets out of the run env, binds the target environment and denies a different run token', async () => {
     const h = harness();
     const credential = await authorizeAdminMessage(h.profile, { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message' }, 'run-1');

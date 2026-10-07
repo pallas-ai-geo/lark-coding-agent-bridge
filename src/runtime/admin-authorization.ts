@@ -49,7 +49,8 @@ export async function authorizeAdminMessage(
   if (!config) throw new Error('Admin authorization is not configured');
   const [bridgeSecret, cfSecret] = await Promise.all([
     resolveSecretInput(config.bridgeSecret, profile.secrets, profile.accounts.app.id, secretPaths),
-    resolveSecretInput(config.cfAccessClientSecret, profile.secrets, profile.accounts.app.id, secretPaths),
+    config.machineAuth === 'ip' ? Promise.resolve(undefined)
+      : resolveSecretInput(config.cfAccessClientSecret, profile.secrets, profile.accounts.app.id, secretPaths),
   ]);
   const result = await fetch(`${config.issuerUrl}/bridge/authorize`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
@@ -78,8 +79,10 @@ export async function authorizeAdminMessage(
   const upstreamHeaders = (extra: Record<string, string> = {}): Record<string, string> => ({
     ...extra,
     authorization: `Bearer ${grant.jwt}`,
-    'CF-Access-Client-Id': config.cfAccessClientId,
-    'CF-Access-Client-Secret': cfSecret,
+    ...(config.machineAuth === 'ip' ? {} : {
+      'CF-Access-Client-Id': config.cfAccessClientId,
+      'CF-Access-Client-Secret': cfSecret!,
+    }),
     'X-Pallas-Region': config.region,
     'X-Pallas-Environment': config.environment,
   });
@@ -191,7 +194,8 @@ export async function authorizeAdminMessage(
   return {
     env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}${prefix}/api`,
       PALLAS_ADMIN_REGION: config.region, PALLAS_ADMIN_ENVIRONMENT: config.environment },
-    removeEnvKeys: [...secretEnvironmentNames(config.bridgeSecret), ...secretEnvironmentNames(config.cfAccessClientSecret)],
+    removeEnvKeys: [...secretEnvironmentNames(config.bridgeSecret),
+      ...(config.cfAccessClientSecret ? secretEnvironmentNames(config.cfAccessClientSecret) : [])],
     dispose,
     onLost(listener) {
       listeners.add(listener);

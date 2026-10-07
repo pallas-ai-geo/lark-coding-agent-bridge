@@ -9,18 +9,19 @@ Configure `adminAuthorization` on the profile:
   "issuerUrl": "https://feishu.pallasai.net",
   "adminUrl": "https://admin.pallasai.net",
   "bridgeSecret": { "source": "env", "id": "BRIDGE_ADMIN_ISSUER_SECRET" },
-  "cfAccessClientId": "<dedicated Cloudflare Service Token Client ID>",
-  "cfAccessClientSecret": { "source": "env", "id": "BRIDGE_ADMIN_CF_SECRET" },
+  "machineAuth": "ip",
   "region": "domestic",
   "environment": "test"
 }
 ```
 
+IP mode does not resolve or send CF service credentials. The server environment file contains only `BRIDGE_ADMIN_ISSUER_SECRET`. To retain the original client behavior, omit `machineAuth` or set it to `service-token` and configure both `cfAccessClientId` and `cfAccessClientSecret`. Mixed or partial credentials are rejected.
+
 Keep secret values out of profile JSON. Existing file/exec secret references also work. Environment references for this feature must start with `BRIDGE_ADMIN_`; these and stale `PALLAS_ADMIN_*` values are excluded from all spawned agent environments.
 
 The issuer uses its own Feishu credentials to verify message sender, tenant, recent timestamp, active employment, mailbox and bot mention. The caller-supplied sender is only a consistency check. The mailbox is checked against Admin's existing roles/environment before agent spawn. Missing permission or verification failure rejects the run, without a privileged fallback.
 
-The public Admin entry points are `/api/developer/me` for the permission preflight and `/api/developer/admin/*` for the existing `/api/admin/*` APIs. Protect `admin.pallasai.net/api/developer/*` with the dedicated Cloudflare Access Service Auth application. Issuer endpoints remain `/bridge/authorize`, `/bridge/jwks`, `/bridge/introspect` and `/bridge/leases/*`.
+The public Admin entry points are `/api/developer/me` for the permission preflight and `/api/developer/admin/*` for the existing `/api/admin/*` APIs. The dedicated Cloudflare Access application keeps its Service Auth policy for other clients. In IP mode, add a separate Bypass policy matching only the fixed Bridge egress IP (`35.189.2.80/32`); Admin also verifies the edge-supplied IP and still requires the signed message token and live lease. Issuer endpoints remain `/bridge/authorize`, `/bridge/jwks`, `/bridge/introspect` and `/bridge/leases/*`.
 
 Each authorized message starts one run. Different senders are never combined into a batch. The same Codex conversation can be resumed, but a new run receives a new environment snapshot and credential. Authorized profiles force lark-cli bot-only identity to avoid inheriting the owner's personal user token.
 

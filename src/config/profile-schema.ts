@@ -244,17 +244,27 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   };
 }
 
-export interface AdminAuthorizationConfig {
+interface AdminAuthorizationBase {
   issuerUrl: string;
   adminUrl: string;
   bridgeSecret: SecretInput;
-  cfAccessClientId: string;
-  cfAccessClientSecret: SecretInput;
   region: 'domestic' | 'overseas';
   environment: 'test' | 'production';
 }
 
+export type AdminAuthorizationConfig = AdminAuthorizationBase & (
+  | { machineAuth: 'ip'; cfAccessClientId?: never; cfAccessClientSecret?: never }
+  | { machineAuth?: 'service-token'; cfAccessClientId: string; cfAccessClientSecret: SecretInput }
+);
+
 function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAuthorizationConfig {
+  if (config.machineAuth !== undefined && !['service-token', 'ip'].includes(config.machineAuth)) {
+    throw new Error('Unsupported Admin machine authentication');
+  }
+  if (config.machineAuth === 'ip' ? Boolean(config.cfAccessClientId || config.cfAccessClientSecret)
+      : !config.cfAccessClientId || !config.cfAccessClientSecret) {
+    throw new Error('Admin machine authentication configuration is incomplete');
+  }
   for (const input of [config.bridgeSecret, config.cfAccessClientSecret]) {
     const name = typeof input === 'string' ? /^\$\{([^}]+)\}$/.exec(input)?.[1]
       : input?.source === 'env' ? input.id : undefined;
@@ -266,7 +276,7 @@ function normalizeAdminAuthorization(config: AdminAuthorizationConfig): AdminAut
       throw new Error('adminAuthorization URLs must be HTTPS origins');
     }
   }
-  if (!config.bridgeSecret || !config.cfAccessClientSecret || !config.cfAccessClientId
+  if (!config.bridgeSecret
       || !['domestic:test', 'domestic:production', 'overseas:production'].includes(`${config.region}:${config.environment}`)) {
     throw new Error('adminAuthorization is incomplete');
   }
