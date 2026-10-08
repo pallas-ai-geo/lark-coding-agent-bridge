@@ -7,7 +7,7 @@ import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
-import { adminRunInstructions, buildAgentEnvironment } from '../run-environment';
+import { buildAgentEnvironment } from '../run-environment';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import {
   CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -69,7 +69,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity) + adminRunInstructions(opts.env));
+    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
 
     const args = [
       '-p',

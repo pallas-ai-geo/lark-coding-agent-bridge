@@ -16,7 +16,7 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { buildCodexArgs } from './argv';
-import { adminRunInstructions, buildAgentEnvironment } from '../run-environment';
+import { buildAgentEnvironment } from '../run-environment';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 
 export interface CodexAdapterOptions {
@@ -154,7 +154,7 @@ export class CodexAdapter implements AgentAdapter {
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
-    child.stdin.end(adminRunInstructions(opts.env) + prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
+    child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
 
     const stopGraceMs = opts.stopGraceMs ?? this.defaultStopGraceMs;
 

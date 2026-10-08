@@ -31,6 +31,7 @@ describe('ClaudeAdapter process contract', () => {
     const run = new ClaudeAdapter({ binary: fake.path }).run({
       runId: 'run-fresh',
       prompt: 'hello',
+      env: { PALLAS_ADMIN_JWT: 'claude-message-jwt', PALLAS_ADMIN_API_BASE_URL: 'http://127.0.0.1:12345' },
       cwd: fake.dir,
       permissionMode: 'acceptEdits',
     });
@@ -62,8 +63,10 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.systemPrompt).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(record.systemPrompt).not.toContain('lark-cli config bind --source lark-channel');
     expect(record.systemPrompt).not.toContain('__claude_cb');
-    expect(record.systemPrompt).toContain('Pallas 业务数据读取必须走目标数据库的只读 SQL');
-    expect(record.systemPrompt).not.toContain('调用 Admin 优先使用');
+    expect(record.systemPrompt).not.toMatch(/Pallas|pallas-(admin|postgres)|commands\/admin\.sh|PALLAS_ADMIN_/);
+    expect(record.systemPrompt).not.toContain('claude-message-jwt');
+    expect(record.env.PALLAS_ADMIN_JWT).toBe('claude-message-jwt');
+    expect(record.env.PALLAS_ADMIN_API_BASE_URL).toBe('http://127.0.0.1:12345');
     expect(record.argv).not.toContain('--resume');
     expect(record.argv).not.toContain('--model');
   });
@@ -251,6 +254,8 @@ async function createFakeClaude(options: {
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
+      '      PALLAS_ADMIN_JWT: process.env.PALLAS_ADMIN_JWT,',
+      '      PALLAS_ADMIN_API_BASE_URL: process.env.PALLAS_ADMIN_API_BASE_URL,',
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
@@ -276,6 +281,8 @@ async function readRecord(path: string): Promise<{
     LARK_CHANNEL_HOME?: string;
     LARK_CHANNEL_CONFIG?: string;
     LARKSUITE_CLI_CONFIG_DIR?: string;
+    PALLAS_ADMIN_JWT?: string;
+    PALLAS_ADMIN_API_BASE_URL?: string;
   };
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -289,6 +296,8 @@ async function readRecord(path: string): Promise<{
       LARK_CHANNEL_HOME?: string;
       LARK_CHANNEL_CONFIG?: string;
       LARKSUITE_CLI_CONFIG_DIR?: string;
+      PALLAS_ADMIN_JWT?: string;
+      PALLAS_ADMIN_API_BASE_URL?: string;
     };
   };
 }

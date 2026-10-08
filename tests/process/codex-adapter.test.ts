@@ -77,9 +77,7 @@ describe('CodexAdapter process contract', () => {
     expect(record.stdin).toContain('LARK_CHANNEL_PROFILE');
     expect(record.stdin).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(record.stdin).not.toContain('lark-cli config bind --source lark-channel');
-    expect(record.stdin).toContain('Pallas 业务数据读取必须走目标数据库的只读 SQL');
-    expect(record.stdin).toContain('资料导出只是读取已有资料并生成本地文件');
-    expect(record.stdin).not.toContain('调用 Admin 优先使用');
+    expect(record.stdin).not.toMatch(/Pallas|pallas-(admin|postgres)|commands\/admin\.sh|PALLAS_ADMIN_/);
     expect(record.stdin).toContain('hello from lark');
     expect(record.stdin).not.toBe('hello from lark');
     expect(record.env).toMatchObject({
@@ -269,9 +267,9 @@ describe('CodexAdapter process contract', () => {
         expect(record.env.PALLAS_ADMIN_JWT).toBe(jwt);
         expect(record.env.BRIDGE_ADMIN_SECRET).toBeUndefined();
         expect(record.stdin).not.toContain(jwt);
-        expect(record.stdin).toContain('Pallas 业务数据读取必须走目标数据库的只读 SQL');
-        expect(record.stdin).toContain('SQL 查询依据已授权的只读数据库连接执行');
-        expect(record.stdin).not.toContain('调用 Admin 优先使用');
+        expect(record.env.PALLAS_ADMIN_API_BASE_URL).toBe('http://127.0.0.1:12345');
+        expect(record.stdin).not.toMatch(/Pallas|pallas-(admin|postgres)|commands\/admin\.sh|PALLAS_ADMIN_/);
+        expect(record.stdin).not.toContain('http://127.0.0.1:12345');
         expect(record.argv).not.toContain(jwt);
       }
       const run = adapter.run({ runId: 'anonymous', prompt: 'continue', threadId: 'same-thread', cwd: await realpath(fake.dir) });
@@ -489,6 +487,7 @@ async function createFakeCodex(options: {
       '      CODEX_HOME: process.env.CODEX_HOME,',
       '      APP_SECRET: process.env.APP_SECRET,',
       '      PALLAS_ADMIN_JWT: process.env.PALLAS_ADMIN_JWT,',
+      '      PALLAS_ADMIN_API_BASE_URL: process.env.PALLAS_ADMIN_API_BASE_URL,',
       '      BRIDGE_ADMIN_SECRET: process.env.BRIDGE_ADMIN_SECRET,',
       '      PATH: process.env.PATH,',
       '    },',
@@ -518,6 +517,7 @@ async function readRecord(path: string): Promise<{
     CODEX_HOME?: string;
     APP_SECRET?: string;
     PALLAS_ADMIN_JWT?: string;
+    PALLAS_ADMIN_API_BASE_URL?: string;
     BRIDGE_ADMIN_SECRET?: string;
     PATH?: string;
   };
@@ -535,6 +535,7 @@ async function readRecord(path: string): Promise<{
       CODEX_HOME?: string;
       APP_SECRET?: string;
       PALLAS_ADMIN_JWT?: string;
+      PALLAS_ADMIN_API_BASE_URL?: string;
       BRIDGE_ADMIN_SECRET?: string;
       PATH?: string;
     };
