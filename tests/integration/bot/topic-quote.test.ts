@@ -622,22 +622,14 @@ describe('topic message quote handling', () => {
     const create = vi.spyOn(CotClient.prototype, 'create').mockImplementation(async (_chatId, origin) => {
       expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_new_task', replyInThread: true });
       expect(origin).toBe('om_sent_1');
-      expect(h.channel.recallMessage).not.toHaveBeenCalled();
       return { cot_id: 'cot-thread', message_id: 'om_cot_in_thread' };
     });
     vi.spyOn(CotClient.prototype, 'update').mockResolvedValue();
     const complete = vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue();
-    h.channel.recallMessage.mockImplementation(async (id: string) => {
-      expect(id).toBe('om_sent_1');
-      expect(create).toHaveBeenCalledOnce();
-      expect(complete).not.toHaveBeenCalled();
-    });
     await startTestBridge(h);
     await h.channel.handlers.message?.(message({ messageId: 'om_new_task', content: '@Bridge fresh request' }));
     await waitFor(() => h.channel.sent.length === 2);
     expect(create).toHaveBeenCalledOnce();
-    expect(h.channel.recallMessage).toHaveBeenCalledOnce();
-    expect(h.channel.recallMessage).toHaveBeenCalledWith('om_sent_1');
     expect(complete).toHaveBeenCalledWith({ cotId: 'cot-thread', messageId: 'om_cot_in_thread' }, 'done');
     expect(h.channel.sent[1]?.options).toMatchObject({ replyTo: 'om_new_task', replyInThread: true });
     expect(JSON.stringify(h.channel.sent[1]?.content)).toContain('finished in thread');
@@ -654,7 +646,6 @@ describe('topic message quote handling', () => {
       threadId: 'omt_existing', parentId: 'om_root', content: '@Bridge continue' }));
     await waitFor(() => h.channel.sent.length === 1);
     expect(create).toHaveBeenCalledWith('oc_topic_chat', 'om_continue');
-    expect(h.channel.recallMessage).not.toHaveBeenCalled();
     expect(h.channel.sent[0]?.options).toMatchObject({ replyInThread: true });
   });
 
@@ -667,40 +658,8 @@ describe('topic message quote handling', () => {
     await h.channel.handlers.message?.(message({ messageId: 'om_anchor_failure', content: '@Bridge request' }));
     await waitFor(() => h.channel.sent.length === 1);
     expect(create).not.toHaveBeenCalled();
-    expect(h.channel.recallMessage).not.toHaveBeenCalledWith('om_anchor_failure');
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_anchor_failure', replyInThread: true });
     expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('safe threaded fallback');
-  });
-
-  it('does not recall the temporary reply if native CoT creation fails', async () => {
-    const h = await createHarness({ agentKind: 'codex', chatMode: 'group', cotMessages: 'brief',
-      agentEvents: [{ type: 'final_text', content: 'creation fallback' }, { type: 'done', terminationReason: 'normal' }] });
-    vi.spyOn(CotClient.prototype, 'create').mockRejectedValue(new Error('native progress unavailable'));
-    await startTestBridge(h);
-    await h.channel.handlers.message?.(message({ messageId: 'om_cot_failure', content: '@Bridge request' }));
-    await waitFor(() => h.channel.sent.length === 2);
-    expect(h.channel.recallMessage).not.toHaveBeenCalledWith('om_sent_1');
-    expect(h.channel.recallMessage).not.toHaveBeenCalledWith('om_cot_failure');
-    expect(h.channel.sent[1]?.options).toMatchObject({ replyTo: 'om_cot_failure', replyInThread: true });
-    expect(JSON.stringify(h.channel.sent[1]?.content)).toContain('creation fallback');
-  });
-
-  it('continues native progress and sends the final answer if the temporary reply cannot be recalled', async () => {
-    const h = await createHarness({ agentKind: 'codex', chatMode: 'group', cotMessages: 'brief',
-      agentEvents: [{ type: 'final_text', content: 'answer despite recall failure' }, { type: 'done', terminationReason: 'normal' }] });
-    vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot-recall-failure', message_id: 'om_progress' });
-    const update = vi.spyOn(CotClient.prototype, 'update').mockResolvedValue();
-    const complete = vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue();
-    h.channel.recallMessage.mockRejectedValue(new Error('recall unavailable'));
-    await startTestBridge(h);
-    await h.channel.handlers.message?.(message({ messageId: 'om_recall_failure', content: '@Bridge request' }));
-    await waitFor(() => h.channel.sent.length === 2);
-    expect(h.channel.recallMessage).toHaveBeenCalledOnce();
-    expect(h.channel.recallMessage).toHaveBeenCalledWith('om_sent_1');
-    expect(update).toHaveBeenCalled();
-    expect(complete).toHaveBeenCalledWith({ cotId: 'cot-recall-failure', messageId: 'om_progress' }, 'done');
-    expect(h.channel.sent[1]?.options).toMatchObject({ replyTo: 'om_recall_failure', replyInThread: true });
-    expect(JSON.stringify(h.channel.sent[1]?.content)).toContain('answer despite recall failure');
   });
 
   it('keeps non-root reply quotes in topic chats', async () => {
