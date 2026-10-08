@@ -16,14 +16,11 @@ The issuer uses its own Feishu credentials to retrieve the original message, ver
 
 Each message starts one run. Different senders are never batched. Resuming the same Codex conversation starts a new run with a new environment snapshot. Profiles with automatic Admin identity force lark-cli bot-only identity, and inherited `PALLAS_ADMIN_*`/`BRIDGE_ADMIN_*` credentials are stripped before inserting the current token.
 
-The agent receives only `PALLAS_ADMIN_JWT` and `PALLAS_ADMIN_API_BASE_URL`, the origin of a distinct loopback proxy for this run. No region/environment default is injected. Use `commands/admin.sh` with explicit target flags; the proxy passes these flags through as headers and rejects missing or unsupported targets:
+Pallas business reads, searches, lists, statistics, document exports and before/after mutation checks must use authorized readonly SQL against the owning database. Exports read existing records and produce local files; they do not qualify as Admin mutations. PostgreSQL uses `pallas-postgres`; Admin's own RBAC/audit data uses its D1 readonly entry. Do not run Admin CLI lookups or membership preflights for a read/export task. SQL access is governed by the authorized database connection, independently of Admin JWT permissions. Missing readonly access is reported as a database connection gap; it does not switch a query to Admin CLI/API. Both adapters receive this routing instruction even when no Admin JWT is present.
 
-```bash
-commands/admin.sh --region domestic --environment production \
-  --base-url "$PALLAS_ADMIN_API_BASE_URL" get /api/developer/me
-```
+The agent receives only `PALLAS_ADMIN_JWT` and `PALLAS_ADMIN_API_BASE_URL`, the origin of a distinct loopback proxy for this run. No region/environment default is injected. Use `commands/admin.sh` only for an actual supported Admin mutation or a task endpoint with modifying side effects, with explicit `--region`, `--environment` and `--base-url "$PALLAS_ADMIN_API_BASE_URL"`. Offline CLI capability discovery may precede a mutation. Classify operations by side effects, not HTTP verbs.
 
-Both `/api/developer/me` and `/api/developer/admin/*` are supported. Non-readonly CLI actions require a second confirmation unless the user explicitly waived it or gave final authorization. A user's current Admin permissions govern all targets. Previously issued environment-bound JWTs retain their narrower scope until expiry; new message JWTs carry identity/message/run claims, not roles or fixed targets.
+The proxy supports `/api/developer/me` and `/api/developer/admin/*`; transport support is not a business-read routing rule. Non-readonly actions require a second confirmation with an itemized scope and before/after state unless the user explicitly waived confirmation or gave final authorization. Current Admin permissions govern Admin calls. Previously issued environment-bound JWTs retain their narrower scope until expiry; new message JWTs carry identity/message/run claims, not roles or fixed targets.
 
 The parent renews a 60-second lease every 20 seconds. Completion/cancellation closes the proxy, aborts outstanding requests and requests revocation. Missed renewal stops the run; if the parent crashes, the remaining lease expires within 60 seconds. JWT hard lifetime is one hour, and a revoked/expired lease cannot be revived. Already accepted mutations are not rolled back.
 

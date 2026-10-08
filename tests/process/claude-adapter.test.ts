@@ -62,6 +62,8 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.systemPrompt).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(record.systemPrompt).not.toContain('lark-cli config bind --source lark-channel');
     expect(record.systemPrompt).not.toContain('__claude_cb');
+    expect(record.systemPrompt).toContain('Pallas 业务数据读取必须走目标数据库的只读 SQL');
+    expect(record.systemPrompt).not.toContain('调用 Admin 优先使用');
     expect(record.argv).not.toContain('--resume');
     expect(record.argv).not.toContain('--model');
   });
