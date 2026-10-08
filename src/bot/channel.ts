@@ -1035,6 +1035,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   try {
     if (cotEnabled) {
       let cotOriginMessageId = lastMsg.messageId;
+      let cotAnchorMessageId: string | undefined;
       let cotPlacementReady = true;
       if (sendOpts.replyInThread && (!lastMsg.threadId || !lastMsg.rootId || lastMsg.rootId === lastMsg.messageId)) {
         // Native CoT inherits its origin's placement. A thread's root message
@@ -1044,6 +1045,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           const anchor = await channel.send(chatId, { markdown: '正在处理这条请求…' }, sendOpts);
           if (!anchor.messageId) throw new Error('Thread progress anchor returned no message ID');
           cotOriginMessageId = anchor.messageId;
+          cotAnchorMessageId = anchor.messageId;
         } catch (err) {
           cotPlacementReady = false;
           log.warn('cot', 'thread-anchor-failed', { err: err instanceof Error ? err.message : String(err) });
@@ -1064,6 +1066,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       if (cotPlacementReady) await cotPublisher.start();
       else cotPublisher.disabled = true; // Fall back to the ordinary threaded renderer.
       if (!cotPublisher.disabled) {
+        // Recall only the temporary bot reply after native progress exists.
+        // Failure to recall must not prevent progress or the final answer.
+        if (cotAnchorMessageId) {
+          try {
+            await channel.recallMessage(cotAnchorMessageId);
+            log.info('outbound', 'recall-cot-anchor', { scope, messageId: cotAnchorMessageId });
+          } catch (err) {
+            log.warn('outbound', 'recall-cot-anchor-failed', {
+              scope,
+              messageId: cotAnchorMessageId,
+              err: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
         });
