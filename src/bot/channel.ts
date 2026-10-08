@@ -1672,6 +1672,11 @@ function buildPrompt(
 ): string {
   const first = batch[0];
   if (!first) return '';
+  const replyTarget = batch[batch.length - 1]!;
+  const replyInThread = first.chatType !== 'p2p';
+  const replyInstruction = replyInThread
+    ? '本轮任务的文字、文件、图片等产出优先回复 bridge_context.replyToMessageId 指定的消息，并保持在该回复线程内。使用 lark-cli im +messages-reply --message-id <replyToMessageId> --reply-in-thread；文件加 --file <path>，图片加 --image <path>。不要默认用 +messages-send --chat-id 发到群主界面；只有用户明确要求另发到群、私聊或其他位置时才按其要求发送。'
+    : '本轮任务的文字、文件、图片等产出优先用 lark-cli im +messages-reply --message-id <bridge_context.replyToMessageId> 回复当前消息；文件加 --file <path>，图片加 --image <path>。当前是私聊，不加 --reply-in-thread；用户明确要求另发时按其要求执行。';
 
   const fileKeys = batch.flatMap((m) => m.resources.map((r) => r.fileKey));
   // When the debounce window merged messages (possibly from several senders —
@@ -1706,12 +1711,11 @@ function buildPrompt(
       ...(mentions.length > 0 ? { mentions } : {}),
       ...(first.threadId ? { threadId: first.threadId } : {}),
       messageIds: batch.map((m) => m.messageId),
+      replyToMessageId: replyTarget.messageId,
+      replyInThread,
       source: 'im',
     },
-    instructions:
-      extraInstructions && extraInstructions.length > 0
-        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
-        : BRIDGE_AGENT_INSTRUCTIONS,
+    instructions: [...BRIDGE_AGENT_INSTRUCTIONS, replyInstruction, ...(extraInstructions ?? [])],
     userInput: userPart,
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
     ...(threadHistory ? { threadHistory } : {}),

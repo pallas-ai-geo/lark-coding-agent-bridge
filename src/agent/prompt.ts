@@ -19,6 +19,9 @@ export interface BridgePromptContext {
   mentions?: BridgePromptMention[];
   threadId?: string;
   messageIds?: string[];
+  /** Current triggering message to reply to, refreshed for every IM run. */
+  replyToMessageId?: string;
+  replyInThread?: boolean;
   source: BridgePromptSource;
 }
 

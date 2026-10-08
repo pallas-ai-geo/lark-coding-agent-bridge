@@ -564,6 +564,28 @@ describe('topic message quote handling', () => {
     expect(h.channel.rawClient.im.v1.message.list).not.toHaveBeenCalled();
   });
 
+  it('supplies a DM reply target without requesting a group thread', async () => {
+    const h = await createHarness({ agentKind: 'codex' });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_dm', content: 'export this file' }), chatType: 'p2p' });
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const prompt = h.agent.runOptions[0]!.prompt;
+    const context = JSON.parse(prompt.match(/<bridge_context>\n([\s\S]*?)\n<\/bridge_context>/)![1]!);
+    expect(context).toMatchObject({ replyToMessageId: 'om_dm', replyInThread: false });
+    const instructions = JSON.parse(prompt.match(/<bridge_instructions>\n([\s\S]*?)\n<\/bridge_instructions>/)![1]!);
+    expect(instructions.join('\n')).toContain('当前是私聊，不加 --reply-in-thread');
+  });
+
+  it('uses the latest triggering message when a DM run batches messages', async () => {
+    const h = await createHarness({ agentKind: 'codex' });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_dm_first', content: 'export this' }), chatType: 'p2p' });
+    await h.channel.handlers.message?.({ ...message({ messageId: 'om_dm_last', content: 'as a zip' }), chatType: 'p2p' });
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const context = JSON.parse(h.agent.runOptions[0]!.prompt.match(/<bridge_context>\n([\s\S]*?)\n<\/bridge_context>/)![1]!);
+    expect(context).toMatchObject({ messageIds: ['om_dm_first', 'om_dm_last'], replyToMessageId: 'om_dm_last', replyInThread: false });
+  });
+
   it('isolates root mentions across users, ignores legacy chat sessions, and resumes only explicit replies', async () => {
     const h = await createHarness({ agentKind: 'codex', chatMode: 'group', rawRootIds: { om_A_reply: 'om_A' }, agentEvents: [
       [{ type: 'system', threadId: 'codex-A' }, { type: 'final_text', content: 'answer A' }, { type: 'done', terminationReason: 'normal' }],
@@ -586,6 +608,18 @@ describe('topic message quote handling', () => {
       parentId: 'om_bot_answer_A', threadId: 'omt_A', content: '@Bridge continue first request' }));
     await waitFor(() => h.channel.sent.length === 3);
     expect(h.agent.runOptions[2]?.threadId).toBe('codex-A');
+    expect(h.agent.runOptions.map(options => {
+      const context = JSON.parse(options.prompt.match(/<bridge_context>\n([\s\S]*?)\n<\/bridge_context>/)![1]!);
+      return { replyToMessageId: context.replyToMessageId, replyInThread: context.replyInThread };
+    })).toEqual([
+      { replyToMessageId: 'om_A', replyInThread: true },
+      { replyToMessageId: 'om_B', replyInThread: true },
+      { replyToMessageId: 'om_A_reply', replyInThread: true },
+    ]);
+    const instructions = JSON.parse(h.agent.runOptions[0]!.prompt.match(/<bridge_instructions>\n([\s\S]*?)\n<\/bridge_instructions>/)![1]!);
+    expect(instructions.join('\n')).toContain('+messages-reply --message-id <replyToMessageId> --reply-in-thread');
+    expect(instructions.join('\n')).toContain('文件加 --file <path>');
+    expect(instructions.join('\n')).toContain('用户明确要求另发');
     expect(h.catalog.entries().filter(entry => entry.threadId === 'legacy-group-session')).toHaveLength(1);
     expect(h.channel.sent.map(item => item.options)).toEqual([
       expect.objectContaining({ replyTo: 'om_A', replyInThread: true }),

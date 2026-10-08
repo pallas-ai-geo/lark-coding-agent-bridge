@@ -268,6 +268,7 @@ To let other people or groups in, add them to one of three lists:
 - Changes take effect on the **next message** — no restart needed.
 - **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
 - **Each new top-level group mention starts an independent session and reply thread**. Continue it by replying inside that thread and mentioning the bot. New main-chat messages never resume a group-wide session, including across different senders. Existing explicit topic/reply threads continue their own history. Use `/stop`, `/status`, `/new` and `/resume` within the relevant thread. Group-wide workspace/settings commands still apply to future threads.
+- **Agent-sent deliverables**: the user prompt includes `bridge_context.replyToMessageId` and `replyInThread`, plus guidance to use `lark-cli im +messages-reply` for text, files and images. Group replies use `--reply-in-thread`; DMs do not. The target refreshes on each run and follows the latest message in a batch. Explicit user requests to send elsewhere take precedence. This guides the agent; it does not intercept or rewrite CLI calls.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
