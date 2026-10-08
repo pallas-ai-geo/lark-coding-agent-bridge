@@ -6,6 +6,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema.j
 import { SessionStore } from '../../../src/session/store.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
 import { commandSessionCatalogIdentity } from '../../../src/bot/session-catalog-identity.js';
+import { CotClient } from '../../../src/bot/cot.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
@@ -68,6 +69,7 @@ const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   sdkMock.channel = undefined;
   sdkMock.createLarkChannel.mockClear();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -614,6 +616,52 @@ describe('topic message quote handling', () => {
     expect(h.agent.runOptions[0]?.threadId).toBeUndefined();
   });
 
+  it('anchors native CoT to an actual reply for a fresh group task, keeping progress and the final answer inside the thread', async () => {
+    const h = await createHarness({ agentKind: 'codex', chatMode: 'group', cotMessages: 'brief',
+      agentEvents: [{ type: 'final_text', content: 'finished in thread' }, { type: 'done', terminationReason: 'normal' }] });
+    const create = vi.spyOn(CotClient.prototype, 'create').mockImplementation(async (_chatId, origin) => {
+      expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_new_task', replyInThread: true });
+      expect(origin).toBe('om_sent_1');
+      return { cot_id: 'cot-thread', message_id: 'om_cot_in_thread' };
+    });
+    vi.spyOn(CotClient.prototype, 'update').mockResolvedValue();
+    const complete = vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue();
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_new_task', content: '@Bridge fresh request' }));
+    await waitFor(() => h.channel.sent.length === 2);
+    expect(create).toHaveBeenCalledOnce();
+    expect(complete).toHaveBeenCalledWith({ cotId: 'cot-thread', messageId: 'om_cot_in_thread' }, 'done');
+    expect(h.channel.sent[1]?.options).toMatchObject({ replyTo: 'om_new_task', replyInThread: true });
+    expect(JSON.stringify(h.channel.sent[1]?.content)).toContain('finished in thread');
+  });
+
+  it('uses an already in-thread user reply directly as the native CoT origin', async () => {
+    const h = await createHarness({ agentKind: 'codex', chatMode: 'topic', cotMessages: 'brief',
+      agentEvents: [{ type: 'final_text', content: 'continue in thread' }, { type: 'done', terminationReason: 'normal' }] });
+    const create = vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot-existing', message_id: 'om_cot_existing' });
+    vi.spyOn(CotClient.prototype, 'update').mockResolvedValue();
+    vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue();
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_continue', rootId: 'om_root',
+      threadId: 'omt_existing', parentId: 'om_root', content: '@Bridge continue' }));
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(create).toHaveBeenCalledWith('oc_topic_chat', 'om_continue');
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyInThread: true });
+  });
+
+  it('falls back to threaded ordinary output if the native CoT anchor cannot be created', async () => {
+    const h = await createHarness({ agentKind: 'codex', chatMode: 'group', cotMessages: 'brief',
+      agentEvents: [{ type: 'final_text', content: 'safe threaded fallback' }, { type: 'done', terminationReason: 'normal' }] });
+    vi.spyOn(h.channel, 'send').mockRejectedValueOnce(new Error('anchor unavailable'));
+    const create = vi.spyOn(CotClient.prototype, 'create');
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_anchor_failure', content: '@Bridge request' }));
+    await waitFor(() => h.channel.sent.length === 1);
+    expect(create).not.toHaveBeenCalled();
+    expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_anchor_failure', replyInThread: true });
+    expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('safe threaded fallback');
+  });
+
   it('keeps non-root reply quotes in topic chats', async () => {
     const h = await createHarness({
       quotedMessages: {
@@ -645,6 +693,7 @@ describe('topic message quote handling', () => {
 });
 
 async function createHarness(options: {
+  cotMessages?: 'off' | 'brief' | 'detailed';
   agentKind?: 'claude' | 'codex';
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
@@ -666,6 +715,7 @@ async function createHarness(options: {
   const workspace = await realpath(tmp.workspace);
   const baseProfileConfig = createDefaultProfileConfig({
     agentKind: options.agentKind ?? 'claude',
+    preferences: { cotMessages: options.cotMessages ?? 'off' },
     ...(options.agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
     accounts: {
       app: {

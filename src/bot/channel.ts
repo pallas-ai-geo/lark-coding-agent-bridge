@@ -1034,6 +1034,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   try {
     if (cotEnabled) {
+      let cotOriginMessageId = lastMsg.messageId;
+      let cotPlacementReady = true;
+      if (sendOpts.replyInThread && (!lastMsg.threadId || !lastMsg.rootId || lastMsg.rootId === lastMsg.messageId)) {
+        // Native CoT inherits its origin's placement. A thread's root message
+        // still lives at chat level, even after ordinary replies open a thread.
+        // Create an actual in-thread origin before publishing native progress.
+        try {
+          const anchor = await channel.send(chatId, { markdown: '正在处理这条请求…' }, sendOpts);
+          if (!anchor.messageId) throw new Error('Thread progress anchor returned no message ID');
+          cotOriginMessageId = anchor.messageId;
+        } catch (err) {
+          cotPlacementReady = false;
+          log.warn('cot', 'thread-anchor-failed', { err: err instanceof Error ? err.message : String(err) });
+        }
+      }
       const cotPublisher = new CotPublisher({
         client: cotClient,
         chatId,
@@ -1041,12 +1056,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         // triggering message is itself in-topic, so the bubble lands in the
         // topic; message_cot has no thread_id receive type, so origin is the
         // only lever we have (see CotClient.create).
-        originMessageId: lastMsg.messageId,
+        originMessageId: cotOriginMessageId,
         runId: execution.runId,
         scope,
         inputPreview: lastMsg.content,
       });
-      await cotPublisher.start();
+      if (cotPlacementReady) await cotPublisher.start();
+      else cotPublisher.disabled = true; // Fall back to the ordinary threaded renderer.
       if (!cotPublisher.disabled) {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
