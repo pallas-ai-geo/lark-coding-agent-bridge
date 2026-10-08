@@ -25,7 +25,7 @@ describe('signed card callback dispatch', () => {
   it('runs built-in command callbacks only when the bridge token verifies', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group:om_card', activeRun);
 
     await h.dispatch({
       cmd: 'stop',
@@ -36,7 +36,7 @@ describe('signed card callback dispatch', () => {
     expect(activeRun.stopped).toBe(true);
 
     const deniedRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', deniedRun);
+    h.activeRuns.register('oc_group:om_card', deniedRun);
     await h.dispatch({
       cmd: 'stop',
       __bridge_cb: true,
@@ -49,7 +49,7 @@ describe('signed card callback dispatch', () => {
   it('forwards signed bridge callbacks without leaking auth fields into the agent payload', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group:om_card', activeRun);
 
     await h.dispatch(
       {
@@ -60,7 +60,7 @@ describe('signed card callback dispatch', () => {
       { note: 'from form' },
     );
 
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a","form_value":{"note":"from form"}}');
     expect(queued[0]?.chatType).toBe('group');
@@ -69,7 +69,7 @@ describe('signed card callback dispatch', () => {
   it('drops legacy Claude callback markers before command dispatch', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group:om_card', activeRun);
 
     await h.dispatch({
       __claude_cb: true,
@@ -77,7 +77,7 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(activeRun.stopped).toBe(false);
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:om_card')).toHaveLength(0);
   });
 
   it('scopes topic-group callbacks by the carrier message thread_id', async () => {
@@ -95,7 +95,7 @@ describe('signed card callback dispatch', () => {
       choice: 'a',
     });
 
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:om_card')).toHaveLength(0);
     const queued = h.pending.cancel('oc_group:th_topic');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toBe('[card-click] {"choice":"a"}');
@@ -119,7 +119,7 @@ describe('signed card callback dispatch', () => {
       choice: 'b',
     });
 
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:om_card')).toHaveLength(0);
     const queued = h.pending.cancel('oc_group:om_reply_root');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toBe('[card-click] {"choice":"b"}');
@@ -129,7 +129,7 @@ describe('signed card callback dispatch', () => {
   it('rejects bridge callbacks when callback auth is unavailable', async () => {
     const h = await createHarness({ callbackAuth: false });
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group:om_card', activeRun);
 
     await h.dispatch({
       __bridge_cb: true,
@@ -137,7 +137,7 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(activeRun.stopped).toBe(false);
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:om_card')).toHaveLength(0);
   });
 
   it('updates the native approval test card for allowed approvers', async () => {
@@ -152,7 +152,7 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(h.channel.sent).toHaveLength(0);
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.messageId).toBe('om_card');
     expect(queued[0]?.rawContentType).toBe('approval_status');
@@ -178,7 +178,7 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(h.channel.sent).toHaveLength(0);
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.messageId).toBe('om_card');
     expect(queued[0]?.rawContentType).toBe('approval_status');
@@ -204,7 +204,7 @@ describe('signed card callback dispatch', () => {
     });
 
     expect(h.channel.sent).toHaveLength(0);
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.content).toContain('审批状态：已通过');
     expect(queued[0]?.content).toContain('req-native-csv-approvers');
@@ -229,7 +229,7 @@ describe('signed card callback dispatch', () => {
     );
 
     expect(h.channel.sent).toHaveLength(0);
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]?.messageId).toBe('om_card');
     expect(queued[0]?.rawContentType).toBe('approval_status');
@@ -258,7 +258,7 @@ describe('signed card callback dispatch', () => {
     expect(h.channel.sent).toHaveLength(1);
     expect(h.channel.sent[0]?.chatId).toBe('ou_operator');
     expect(JSON.stringify(h.channel.sent[0]?.content)).toContain('没有权限');
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
+    expect(h.pending.cancel('oc_group:om_card')).toHaveLength(0);
   });
 });
 
@@ -340,7 +340,7 @@ async function createHarness(
       nonce = overrides.nonce ?? `nonce-${action}`;
       return auth.sign({
         runId: 'run-active',
-        scope: overrides.scope ?? 'oc_group',
+        scope: overrides.scope ?? 'oc_group:om_card',
         chatId: 'oc_group',
         operatorOpenId: overrides.operatorOpenId ?? 'ou_operator',
         action,

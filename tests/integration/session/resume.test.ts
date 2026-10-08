@@ -95,6 +95,24 @@ describe('agent-aware run-flow resume', () => {
     });
   });
 
+  it('continues an explicit pre-root-ID Codex topic without ever consulting a bare group session', async () => {
+    const h = await createHarness('codex');
+    const legacy = await start(h, { scopeId: 'chat-1:omt_legacy',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user', threadId: 'omt_legacy' } });
+    if (!legacy.ok) throw new Error('expected legacy topic run');
+    await collect(legacy.execution.subscribe());
+    h.catalog.upsertActive({ scopeId: 'chat-1:omt_legacy', agentId: 'codex', cwdRealpath: legacy.cwdRealpath,
+      policyFingerprint: legacy.policy.policyFingerprint, threadId: 'codex-legacy-topic' });
+    const reply = await start(h, { scopeId: 'chat-1:om_root', legacyThreadId: 'omt_legacy',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user', threadId: 'om_root' } });
+    if (!reply.ok) throw new Error('expected canonical reply run');
+    expect(reply.resumeFrom).toBe('codex-legacy-topic');
+    await collect(reply.execution.subscribe());
+    const newRoot = await start(h, { scopeId: 'chat-1:om_new',
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user', threadId: 'om_new' } });
+    expect(newRoot.ok && newRoot.resumeFrom).toBeUndefined();
+  });
+
   it('does not resume when the policy fingerprint changes', async () => {
     const h = await createHarness('claude');
     const first = await start(h);
@@ -237,7 +255,7 @@ async function collect(events: AsyncIterable<unknown>): Promise<void> {
   }
 }
 
-async function start(h: Awaited<ReturnType<typeof createHarness>>) {
+async function start(h: Awaited<ReturnType<typeof createHarness>>, overrides: Partial<StartRunFlowInput> = {}) {
   const input = {
     scopeId: 'chat-1',
     scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
@@ -255,5 +273,5 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     executor: h.executor,
     now: 1000,
   } satisfies StartRunFlowInput & { sessionCatalog: SessionCatalog };
-  return startRunFlow(input);
+  return startRunFlow({ ...input, ...overrides });
 }

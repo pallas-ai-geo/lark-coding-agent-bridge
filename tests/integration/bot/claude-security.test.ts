@@ -51,13 +51,13 @@ describe('Claude shared security regressions', () => {
       chatModeCache: h.chatModeCache,
     });
 
-    expect(h.pending.cancel('oc_group')).toEqual([]);
+    expect(h.pending.cancel('oc_group:om_card')).toEqual([]);
   });
 
   it('forwards signed bridge card callbacks with the real group chat type', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' });
-    h.activeRuns.register('oc_group', activeRun);
+    h.activeRuns.register('oc_group:om_card', activeRun);
 
     await handleCardAction({
       channel: h.channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
@@ -80,13 +80,13 @@ describe('Claude shared security regressions', () => {
       callbackPolicyFingerprint: 'fp-1',
     });
 
-    const queued = h.pending.cancel('oc_group');
+    const queued = h.pending.cancel('oc_group:om_card');
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({
       chatId: 'oc_group',
       chatType: 'group',
       senderId: 'ou_operator',
-      threadId: undefined,
+      threadId: 'om_card',
       content: '[card-click] {"choice":"a","form_value":{"note":"from form"}}',
       rawContentType: 'card_action',
     });
@@ -148,7 +148,7 @@ async function createHarness(): Promise<Harness> {
       nextNonce = nonce;
       return callbackAuth.sign({
         runId: 'run-active',
-        scope: 'oc_group',
+        scope: 'oc_group:om_card',
         chatId: 'oc_group',
         operatorOpenId: 'ou_operator',
         action,

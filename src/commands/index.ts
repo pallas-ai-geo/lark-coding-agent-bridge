@@ -216,6 +216,13 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
   if (!h) return false;
+  // Group-wide settings remain useful from the main chat. Task/session commands
+  // operate on the explicit reply thread (or open a new command thread).
+  if (ctx.chatMode === 'group' && !ctx.msg.threadId && !ctx.msg.replyToMessageId
+      && (!ctx.msg.rootId || ctx.msg.rootId === ctx.msg.messageId)
+      && ['/cd', '/ws', '/config', '/model', '/invite', '/remove', '/help'].includes(cmd)) {
+    ctx = { ...ctx, scope: ctx.msg.chatId, sessionCatalogIdentity: undefined };
+  }
   if (
     isAdminCommand(cmd) &&
     !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
@@ -325,7 +332,7 @@ async function reply(ctx: CommandContext, markdown: string): Promise<void> {
 function commandReplyOptions(ctx: CommandContext): { replyTo: string; replyInThread?: true } {
   return {
     replyTo: ctx.msg.messageId,
-    ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { replyInThread: true as const } : {}),
+    ...(ctx.msg.chatType !== 'p2p' ? { replyInThread: true as const } : {}),
   };
 }
 
@@ -362,6 +369,16 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
       ...ctx.sessionCatalogIdentity,
       now: Date.now(),
     });
+    const legacyScope = ctx.msg.threadId ? `${ctx.msg.chatId}:${ctx.msg.threadId}` : undefined;
+    if (legacyScope && legacyScope !== ctx.scope && ctx.msg.rootId !== ctx.msg.messageId) {
+      for (const entry of ctx.sessionCatalog.entries()) {
+        if (entry.scopeId === legacyScope && entry.agentId === ctx.sessionCatalogIdentity.agentId
+            && entry.cwdRealpath === ctx.sessionCatalogIdentity.cwdRealpath) {
+          ctx.sessionCatalog.archiveActive(entry);
+        }
+      }
+      ctx.sessions.clear(legacyScope);
+    }
   }
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');

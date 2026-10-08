@@ -18,7 +18,8 @@ export async function commandSessionCatalogIdentity(input: {
   access: AccessDecision;
 }): Promise<SessionCatalogIdentity | undefined> {
   const requestedCwd =
-    input.workspaces.cwdFor(input.scope) ?? input.controls.profileConfig.workspaces.default;
+    input.workspaces.cwdFor(input.scope) ?? input.workspaces.cwdFor(input.msg.chatId)
+    ?? input.controls.profileConfig.workspaces.default;
   if (!requestedCwd) return undefined;
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) return undefined;

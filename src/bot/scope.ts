@@ -19,12 +19,13 @@ export interface ScopeMessageIds {
 /**
  * Compute the **session scope** for a message.
  *
- *  - **p2p / top-level group messages**: scope = `chatId`.
+ *  - **p2p messages**: scope = `chatId`.
+ *  - **top-level group messages**: scope = `${chatId}:${messageId}`.
  *  - **regular group reply threads**: scope = `${chatId}:${replyThreadId}`.
- *  - **topic group**: scope = `${chatId}:${threadId}`.
+ *  - **topic group**: scope = `${chatId}:${rootId ?? threadId}`.
  *
- * Topic-group top-level messages (no threadId, rare) and regular group
- * messages without a reply/thread anchor fall back to `chatId`.
+ * Every group message must have a message/thread anchor; never fall back to
+ * a group-wide session. Root message IDs take precedence over a later omt ID.
  *
  * Async because chat mode requires an API lookup (cached after first hit).
  * Callers typically await this once at intake/cardAction entry and pass
@@ -35,9 +36,10 @@ export async function scopeFor(
   chatId: string,
   threadId: string | undefined,
   cache: ChatModeCache,
+  messageId?: string,
 ): Promise<string> {
   const mode = await cache.resolve(channel, chatId);
-  return scopeForParts(chatId, scopeThreadIdForIds({ threadId }, mode));
+  return scopeForParts(chatId, scopeThreadIdForIds({ threadId, messageId }, mode));
 }
 
 /** Convenience overload from a NormalizedMessage. */
@@ -72,6 +74,7 @@ export function scopeThreadIdForMessage(
   msg: NormalizedMessage,
   mode: ChatMode,
 ): string | undefined {
+  if (msg.chatType === 'p2p') return undefined;
   return scopeThreadIdForIds(msg as ScopeMessageIds, mode);
 }
 
@@ -80,14 +83,15 @@ export function scopeThreadIdForIds(
   mode: ChatMode,
 ): string | undefined {
   if (mode === 'p2p') return undefined;
-  if (mode === 'topic') return firstScopePart(ids.threadId, ids.rootId, ids.messageId);
-
-  return firstScopePart(
-    ids.threadId,
+  const anchor = firstScopePart(
     ids.rootId,
+    ids.threadId,
     ids.replyToMessageId,
     ids.parentId,
+    ids.messageId,
   );
+  if (!anchor) throw new Error('Group messages require a message or thread anchor');
+  return anchor;
 }
 
 function firstScopePart(...values: Array<string | undefined>): string | undefined {

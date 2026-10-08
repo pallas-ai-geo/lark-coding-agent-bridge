@@ -24,6 +24,8 @@ import type { WorkspaceStore } from '../workspace/store';
 
 export interface StartRunFlowInput {
   authorize?: RunCredentialFactory;
+  /** An explicit reply may continue its pre-root-ID topic session, never a chat-level session. */
+  legacyThreadId?: string;
   scopeId: string;
   scope: ScopeContext;
   prompt: string;
@@ -78,7 +80,9 @@ export interface RecordRunSessionEventInput {
 
 export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
   const requestedCwd =
-    input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
+    input.workspaces.cwdFor(input.scopeId)
+    ?? (input.scope.source === 'im' && input.scope.chatId ? input.workspaces.cwdFor(input.scope.chatId) : undefined)
+    ?? input.profileConfig.workspaces.default ?? '';
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) {
     return {
@@ -116,12 +120,28 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   let sessionId: string | undefined;
   let threadId: string | undefined;
   if (input.sessionCatalog) {
-    const catalogEntry = input.sessionCatalog.activeFor({
+    let catalogEntry = input.sessionCatalog.activeFor({
       scopeId: input.scopeId,
       agentId: input.capability.agentId,
       cwdRealpath: workspace.cwdRealpath,
       policyFingerprint: policy.policyFingerprint,
     });
+    if (!catalogEntry && input.scope.source === 'im' && input.scope.chatId
+        && input.legacyThreadId && input.legacyThreadId !== input.scope.threadId) {
+      const legacyPolicy = evaluateRunPolicy({
+        scope: { ...input.scope, threadId: input.legacyThreadId },
+        attachments: input.attachments, prompt: input.prompt, requestedCwd,
+        cwdRealpath: workspace.cwdRealpath, access: input.access, capability: input.capability,
+        profileConfig: input.profileConfig, now: input.now,
+        codexHome: input.profileConfig.codex?.codexHome,
+        inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
+      });
+      if (legacyPolicy.ok) catalogEntry = input.sessionCatalog.activeFor({
+        scopeId: `${input.scope.chatId}:${input.legacyThreadId}`,
+        agentId: input.capability.agentId, cwdRealpath: workspace.cwdRealpath,
+        policyFingerprint: legacyPolicy.policyFingerprint,
+      });
+    }
     if (catalogEntry?.agentId === 'claude') {
       sessionId = catalogEntry.sessionId;
       resumeFrom = sessionId;
@@ -132,6 +152,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   }
   if (!resumeFrom && input.capability.agentId === 'claude') {
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
+    if (!resumeFrom && input.legacyThreadId && input.scope.chatId) {
+      resumeFrom = input.sessions.resumeFor(`${input.scope.chatId}:${input.legacyThreadId}`, workspace.cwdRealpath);
+    }
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
     if (!resumeFrom && stale?.cwd && stale.cwd !== workspace.cwdRealpath) {

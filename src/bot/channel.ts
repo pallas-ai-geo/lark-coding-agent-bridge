@@ -65,7 +65,7 @@ import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
-import { lookupMessageThreadId } from './thread-id';
+import { lookupMessageThreadId, lookupMessageThread } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
@@ -584,8 +584,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // the event dropped `thread_id`, backfill it from the raw message — the same
   // recovery the card-click path uses.
   let threadId = msg.threadId;
-  if (!threadId && resolvedMode === 'topic') {
-    threadId = await lookupMessageThreadId(channel, msg.messageId);
+  let rootId = msg.rootId;
+  if ((!threadId && resolvedMode === 'topic') || (threadId && !rootId)) {
+    const metadata = await lookupMessageThread(channel, msg.messageId);
+    threadId ??= metadata?.threadId;
+    rootId ??= metadata?.rootId;
     if (threadId) {
       log.info('intake', 'thread-id-backfilled', {
         chatId: msg.chatId,
@@ -597,7 +600,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // Carry the (possibly backfilled) threadId on the message so the batched
   // flush — which reads `firstMsg.threadId` for reply routing and topic scope —
   // sees it.
-  const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
+  const emsg: NormalizedMessage = threadId === msg.threadId && rootId === msg.rootId
+    ? msg : { ...msg, threadId, rootId };
   // Some groups are converted into topic groups after creation. In that state
   // getChatMode can lag behind the message event shape, so threadId is the
   // stronger signal for topic-scoped sessions and reply routing.
@@ -788,8 +792,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // live nowhere the agent can see them. Fetch them so it isn't blind to what
   // the user is pointing at. An already-engaged topic keeps that history in its
   // resumed session, so we skip the fetch there.
+  const isReply = Boolean(firstMsg.threadId || firstMsg.replyToMessageId
+    || (firstMsg.rootId && firstMsg.rootId !== firstMsg.messageId));
+  const legacyScope = isReply && threadId ? `${chatId}:${threadId}` : undefined;
+  const hasSession = Boolean(sessions.getRaw(scope) || (legacyScope && sessions.getRaw(legacyScope))
+    || sessionCatalog?.entries().some(entry => entry.status === 'active'
+      && entry.agentId === controls.profileConfig.agentKind
+      && (entry.scopeId === scope || entry.scopeId === legacyScope)));
   let topicContext: QuotedContext[] = [];
-  if (mode === 'topic' && threadId && !sessions.getRaw(scope)) {
+  if (mode === 'topic' && threadId && !hasSession) {
     const exclude = new Set([...batchIds, ...quoteTargets]);
     topicContext = await fetchTopicContext(channel, threadId, {
       maxMessages: 40,
@@ -805,7 +816,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const threadHistory =
-    mode === 'group'
+    mode === 'group' && isReply
       ? await fetchThreadHistory(channel, {
           scope,
           chatId,
@@ -855,10 +866,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
   });
 
-  // If the scope resolver found a Feishu thread anchor, keep every bridge
-  // reply on that thread. This covers both real topic groups and regular
-  // group reply threads; top-level group messages have no scopeThreadId and
-  // keep the legacy group-level reply behavior.
+  // Every group task replies in its own thread. Fresh root messages use their
+  // own message ID; subsequent replies use that stable root rather than the chat.
   const sendOpts = {
     replyTo: lastMsg.messageId,
     ...(mode !== 'p2p' && scopeThreadId ? { replyInThread: true } : {}),
@@ -888,6 +897,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       : claudeCapability(controls.profileConfig);
   const authorizationProfile = controls.profileConfig;
   const flow = await startRunFlow({
+    ...(isReply && firstMsg.rootId && firstMsg.rootId !== firstMsg.messageId && firstMsg.threadId
+      ? { legacyThreadId: firstMsg.threadId } : {}),
     ...(authorizationProfile.adminAuthorization ? {
       authorize: (runId: string) => authorizeAdminMessage(authorizationProfile, {
         messageId: firstMsg.messageId, chatId: firstMsg.chatId, senderId: firstMsg.senderId,

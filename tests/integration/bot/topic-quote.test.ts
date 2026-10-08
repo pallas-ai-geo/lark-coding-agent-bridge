@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
+import { SessionCatalog } from '../../../src/session/catalog.js';
+import { commandSessionCatalogIdentity } from '../../../src/bot/session-catalog-identity.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
-import type { AgentEvent } from '../../../src/agent/types.js';
+import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -535,7 +536,7 @@ describe('topic message quote handling', () => {
     });
   });
 
-  it('keeps top-level regular group output at group level', async () => {
+  it('starts a reply thread for every top-level regular group task', async () => {
     const h = await createHarness({
       chatMode: 'group',
       agentEvents: [
@@ -556,8 +557,61 @@ describe('topic message quote handling', () => {
 
     expect(h.channel.streams[0]?.options).toMatchObject({
       replyTo: 'om_group_top',
+      replyInThread: true,
     });
-    expect((h.channel.streams[0]?.options as { replyInThread?: boolean }).replyInThread).toBeUndefined();
+    expect(h.channel.rawClient.im.v1.message.list).not.toHaveBeenCalled();
+  });
+
+  it('isolates root mentions across users, ignores legacy chat sessions, and resumes only explicit replies', async () => {
+    const h = await createHarness({ agentKind: 'codex', chatMode: 'group', rawRootIds: { om_A_reply: 'om_A' }, agentEvents: [
+      [{ type: 'system', threadId: 'codex-A' }, { type: 'final_text', content: 'answer A' }, { type: 'done', terminationReason: 'normal' }],
+      [{ type: 'system', threadId: 'codex-B' }, { type: 'final_text', content: 'answer B' }, { type: 'done', terminationReason: 'normal' }],
+      [{ type: 'system', threadId: 'codex-A' }, { type: 'final_text', content: 'continue A' }, { type: 'done', terminationReason: 'normal' }],
+    ] });
+    const legacyIdentity = await commandSessionCatalogIdentity({ msg: message({ messageId: 'om_legacy', content: 'legacy' }), scope: 'oc_topic_chat',
+      mode: 'p2p', workspaces: h.workspaces, controls: h.controls, access: { ok: true, reason: 'allowed-chat' } });
+    if (!legacyIdentity) throw new Error('expected legacy identity');
+    h.catalog.upsertActive({ ...legacyIdentity, threadId: 'legacy-group-session' });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_A', content: '@Bridge first independent request' }));
+    await waitFor(() => h.channel.sent.length === 1);
+    await h.channel.handlers.message?.(message({ messageId: 'om_B', senderId: 'ou_bob', content: '@Bridge second independent request' }));
+    await waitFor(() => h.channel.sent.length === 2);
+    expect(h.agent.runOptions[0]?.threadId).toBeUndefined();
+    expect(h.agent.runOptions[1]?.threadId).toBeUndefined();
+    expect(h.agent.runOptions[1]?.prompt).not.toContain('first independent request');
+    await h.channel.handlers.message?.(message({ messageId: 'om_A_reply',
+      parentId: 'om_bot_answer_A', threadId: 'omt_A', content: '@Bridge continue first request' }));
+    await waitFor(() => h.channel.sent.length === 3);
+    expect(h.agent.runOptions[2]?.threadId).toBe('codex-A');
+    expect(h.catalog.entries().filter(entry => entry.threadId === 'legacy-group-session')).toHaveLength(1);
+    expect(h.channel.sent.map(item => item.options)).toEqual([
+      expect.objectContaining({ replyTo: 'om_A', replyInThread: true }),
+      expect.objectContaining({ replyTo: 'om_B', replyInThread: true }),
+      expect.objectContaining({ replyTo: 'om_A_reply', replyInThread: true }),
+    ]);
+  });
+
+  it('resets a legacy topic alias with /new so it cannot restore the old session again', async () => {
+    const h = await createHarness({ agentKind: 'codex', chatMode: 'topic', agentEvents: [
+      { type: 'system', threadId: 'codex-after-reset' }, { type: 'final_text', content: 'fresh after reset' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    const legacyIdentity = await commandSessionCatalogIdentity({
+      msg: message({ messageId: 'om_before_reset', threadId: 'omt_legacy', content: 'legacy' }),
+      scope: 'oc_topic_chat:omt_legacy', mode: 'topic', workspaces: h.workspaces,
+      controls: h.controls, access: { ok: true, reason: 'allowed-chat' },
+    });
+    if (!legacyIdentity) throw new Error('expected legacy identity');
+    h.catalog.upsertActive({ ...legacyIdentity, threadId: 'codex-before-reset' });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message({ messageId: 'om_reset', rootId: 'om_root',
+      threadId: 'omt_legacy', parentId: 'om_root', content: '@Bridge /new' }));
+    expect(h.catalog.entries().find(entry => entry.threadId === 'codex-before-reset')?.status).toBe('archived');
+    await h.channel.handlers.message?.(message({ messageId: 'om_after_reset', rootId: 'om_root',
+      threadId: 'omt_legacy', parentId: 'om_reset', content: '@Bridge fresh request' }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    expect(h.agent.runOptions[0]?.threadId).toBeUndefined();
   });
 
   it('keeps non-root reply quotes in topic chats', async () => {
@@ -595,13 +649,15 @@ async function createHarness(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
+  rawRootIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
-  agentEvents?: AgentEvent[];
+  agentEvents?: FakeAgentEvents;
 } = {}):Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
   sessions: SessionStore;
+  catalog: SessionCatalog;
   workspaces: WorkspaceStore;
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   controls: ReturnType<typeof createControls>;
@@ -631,6 +687,7 @@ async function createHarness(options: {
     },
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
+  const catalog = new SessionCatalog(join(tmp.profile, 'sessions.json.catalog.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
     events: options.agentEvents ?? [{ type: 'done', terminationReason: 'normal' }],
@@ -639,7 +696,7 @@ async function createHarness(options: {
   sdkMock.channel = channel;
   const controls = createControls(profileConfig);
   cleanups.push(async () => {
-    await Promise.all([sessions.flush(), workspaces.flush()]);
+    await Promise.all([sessions.flush(), catalog.flush(), workspaces.flush()]);
     await tmp.cleanup();
   });
   return {
@@ -647,6 +704,7 @@ async function createHarness(options: {
     channel,
     agent,
     sessions,
+    catalog,
     workspaces,
     profileConfig,
     controls,
@@ -657,6 +715,7 @@ async function startTestBridge(h: {
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   agent: FakeAgentAdapter;
   sessions: SessionStore;
+  catalog: SessionCatalog;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
 }): Promise<void> {
@@ -664,6 +723,7 @@ async function startTestBridge(h: {
     cfg: h.profileConfig,
     agent: h.agent,
     sessions: h.sessions,
+    sessionCatalog: h.catalog,
     workspaces: h.workspaces,
     controls: h.controls,
   });
@@ -674,6 +734,7 @@ function createFakeLarkChannel(options: {
   chatMode?: 'group' | 'topic';
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
+  rawRootIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
 } = {}):FakeLarkChannel & { handlers: MessageHandlerMap } {
   const handlers: MessageHandlerMap = {};
@@ -685,6 +746,7 @@ function createFakeLarkChannel(options: {
     om_topic_root: 'topic root content',
   };
   const rawThreadIds = options.rawThreadIds ?? {};
+  const rawRootIds = options.rawRootIds ?? {};
   const threadMessages = options.threadMessages ?? [];
   return {
     handlers,
@@ -720,6 +782,7 @@ function createFakeLarkChannel(options: {
         create_time: '1760000000000',
         sender: { id: 'ou_quote_sender' },
         ...(rawThreadIds[messageId] ? { thread_id: rawThreadIds[messageId] } : {}),
+        ...(rawRootIds[messageId] ? { root_id: rawRootIds[messageId] } : {}),
       },
     ]),
     on(nextHandlers) {
@@ -768,6 +831,7 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
 
 function message(input: {
   messageId: string;
+  senderId?: string;
   rootId?: string;
   parentId?: string;
   threadId?: string;
@@ -780,7 +844,7 @@ function message(input: {
     messageId: input.messageId,
     chatId: 'oc_topic_chat',
     chatType: 'group',
-    senderId: 'ou_user',
+    senderId: input.senderId ?? 'ou_user',
     senderName: 'User',
     content: input.content,
     rawContentType: 'text',
