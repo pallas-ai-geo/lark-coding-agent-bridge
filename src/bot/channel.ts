@@ -902,6 +902,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(authorizationProfile.adminAuthorization ? {
       authorize: (runId: string) => authorizeAdminMessage(authorizationProfile, {
         messageId: firstMsg.messageId, chatId: firstMsg.chatId, senderId: firstMsg.senderId,
+        ...(firstMsg.senderName ? { senderName: firstMsg.senderName } : {}),
       }, runId),
     } : {}),
     scopeId: scope,

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { promptSection } from '../agent/prompt';
 import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
 import { ActiveRuns, type RunHandle } from '../bot/active-runs';
 import { ProcessPool } from '../bot/process-pool';
@@ -149,7 +150,9 @@ export class RunExecutor {
       throw new RunRejected('policy-expired', 'run policy expired during message authorization');
     }
     try {
-      const rawRun = this.agent.run({ ...runOptions, ...(credentials ? { env: { ...credentials.env }, removeEnvKeys: credentials.removeEnvKeys } : {}) });
+      const rawRun = this.agent.run({ ...runOptions,
+        ...(credentials?.messageSender ? { prompt: `${promptSection('message_sender', credentials.messageSender)}\n\n${runOptions.prompt}` } : {}),
+        ...(credentials ? { env: { ...credentials.env }, removeEnvKeys: credentials.removeEnvKeys } : {}) });
       // All stop paths (including cards/reconnect calling handle.run.stop directly) revoke first.
       run = credentials ? {
         runId: rawRun.runId,

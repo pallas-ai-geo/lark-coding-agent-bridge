@@ -18,9 +18,13 @@ function harness(accessAllowed = true) {
     const headers = new Headers(init?.headers);
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, string> : undefined;
     requests.push({ url, headers, body });
-    if (url.endsWith('/bridge/authorize')) return Response.json({ jwt: `message-jwt-${body!.actor_open_id}-${body!.run_id}`, jti: 'a'.repeat(64), manager_token: 'parent-only-manager',
+    if (url.endsWith('/bridge/authorize')) {
+      const actor = body?.actor_open_id;
+      if (!actor) throw new Error('Missing sender in authorization fixture');
+      return Response.json({ email: `${actor.slice(3)}@pallasai.net`, jwt: `message-jwt-${body!.actor_open_id}-${body!.run_id}`, jti: 'a'.repeat(64), manager_token: 'parent-only-manager',
       app_id: body!.app_id, actor_open_id: body!.actor_open_id, message_id: body!.message_id, chat_id: body!.chat_id, run_id: body!.run_id,
       expires_at: Math.floor(Date.now() / 1000) + 3600, lease_seconds: 60 });
+    }
     if (url.endsWith('/api/developer/me')) return Response.json({ email: 'alice@pallasai.net' }, { status: accessAllowed ? 200 : 403 });
     if (url.endsWith('/revoke') || url.endsWith('/renew')) return Response.json({ active: false });
     if (url.includes('/api/developer/admin/')) return Response.json({ ok: accessAllowed }, { status: accessAllowed ? 200 : 403 });
@@ -28,7 +32,7 @@ function harness(accessAllowed = true) {
   }));
   return { profile, requests, jwt };
 }
-const identity = { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message' };
+const identity = { senderId: 'ou_alice', chatId: 'oc_chat', messageId: 'om_message', senderName: 'Alice' };
 function headers(jwt: string, region = 'domestic', environment = 'production') {
   return { authorization: `Bearer ${jwt}`, 'X-Pallas-Region': region, 'X-Pallas-Environment': environment };
 }
@@ -40,6 +44,7 @@ describe('Per-message Admin proxy', () => {
     const authorization = h.requests[0]; if (!authorization) throw new Error('Missing issuer request');
     expect(authorization.headers.get('Authorization')).toBeNull();
     expect(authorization.body).toEqual({ message_id: 'om_message', chat_id: 'oc_chat', actor_open_id: 'ou_alice', run_id: 'run-1', app_id: 'cli_test' });
+    expect(credential.messageSender).toEqual({ senderId: 'ou_alice', senderName: 'Alice', senderEmail: 'alice@pallasai.net' });
     expect(credential.env).not.toHaveProperty('PALLAS_ADMIN_REGION');
     expect(credential.env).not.toHaveProperty('PALLAS_ADMIN_ENVIRONMENT');
     expect((await realFetch(`${credential.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`, { headers: headers(h.jwt) })).status).toBe(200);
@@ -87,7 +92,9 @@ describe('Per-message Admin proxy', () => {
   });
   it('keeps consecutive users and their proxy tokens separate in the same chat', async () => {
     const h = harness(); const alice = await authorizeAdminMessage(h.profile, identity, 'run-1'); cleanups.push(alice);
-    const bob = await authorizeAdminMessage(h.profile, { ...identity, messageId: 'om_bob', senderId: 'ou_bob' }, 'run-2'); cleanups.push(bob);
+    const bob = await authorizeAdminMessage(h.profile, { ...identity, messageId: 'om_bob', senderId: 'ou_bob', senderName: 'Bob' }, 'run-2'); cleanups.push(bob);
+    expect(alice.messageSender?.senderEmail).toBe('alice@pallasai.net');
+    expect(bob.messageSender).toEqual({ senderId: 'ou_bob', senderName: 'Bob', senderEmail: 'bob@pallasai.net' });
     const a = `${alice.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`;
     const b = `${bob.env.PALLAS_ADMIN_API_BASE_URL}/api/developer/admin/groups`;
     const aliceJwt = alice.env.PALLAS_ADMIN_JWT, bobJwt = bob.env.PALLAS_ADMIN_JWT;

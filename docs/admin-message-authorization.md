@@ -20,6 +20,8 @@ The agent receives `PALLAS_ADMIN_JWT` and `PALLAS_ADMIN_API_BASE_URL` only throu
 
 SQL/CLI routing, export behavior and mutation-confirmation requirements belong to the target workspace's `AGENTS.md` and skills. Bridge does not prepend or append product-specific business instructions to agent prompts. The adapters retain only the generic channel runtime conventions; enabling message credentials does not add a product policy prompt.
 
+The verified issuer email and the current message sender ID/display name are included as structured `message_sender` data in the user prompt, refreshed for every run, including replies that resume a shared thread. Display name is included when available from the current message. This block contains no JWT, system instructions, roles or permissions; absent credentials do not reuse a previous sender. JSON/XML delimiters in display names are escaped.
+
 Current Admin permissions govern Admin calls. Previously issued environment-bound JWTs retain their narrower scope until expiry; new message JWTs carry identity/message/run claims, not roles or fixed targets.
 
 The parent renews a 60-second lease every 20 seconds. Completion/cancellation closes the proxy, aborts outstanding requests and requests revocation. Missed renewal stops the run; if the parent crashes, the remaining lease expires within 60 seconds. JWT hard lifetime is one hour, and a revoked/expired lease cannot be revived. Already accepted mutations are not rolled back.

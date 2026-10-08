@@ -14,9 +14,11 @@ export interface AdminMessageIdentity {
   messageId: string;
   chatId: string;
   senderId: string;
+  senderName?: string;
 }
 
 interface Grant {
+  email: string;
   jwt: string;
   jti: string;
   manager_token: string;
@@ -69,7 +71,8 @@ export async function authorizeAdminMessage(
     throw new RunRejected('message-authorization-denied', `飞书消息身份校验或 JWT 签发失败（${reason}）`);
   }
   const grant = await result.json() as Grant;
-  if (typeof grant.jwt !== 'string' || typeof grant.manager_token !== 'string' || !/^[a-f0-9]{64}$/.test(grant.jti)
+  if (typeof grant.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(grant.email)
+      || typeof grant.jwt !== 'string' || typeof grant.manager_token !== 'string' || !/^[a-f0-9]{64}$/.test(grant.jti)
       || grant.message_id !== identity.messageId || grant.actor_open_id !== identity.senderId
       || grant.chat_id !== identity.chatId || grant.run_id !== runId || grant.app_id !== profile.accounts.app.id
       || !Number.isFinite(grant.expires_at) || grant.expires_at * 1000 <= Date.now()
@@ -196,6 +199,7 @@ export async function authorizeAdminMessage(
   if (!address || typeof address === 'string') { await dispose(); throw new Error('Local Admin proxy unavailable'); }
   return {
     env: { PALLAS_ADMIN_JWT: grant.jwt, PALLAS_ADMIN_API_BASE_URL: `http://127.0.0.1:${address.port}` },
+    messageSender: { senderId: identity.senderId, ...(identity.senderName ? { senderName: identity.senderName } : {}), senderEmail: grant.email },
     removeEnvKeys: config.cfAccessClientSecret ? secretEnvironmentNames(config.cfAccessClientSecret) : [],
     dispose,
     onLost(listener) {
